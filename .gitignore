@@ -8,3 +8,5 @@ logs/
 .DS_Store
 .workbuddy/
 .idea/
+.env.backup.*
+data.backup.*/

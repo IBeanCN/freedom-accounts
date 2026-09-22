@@ -2,7 +2,8 @@ services:
   app:
     build: .
     ports:
-      - "${FA_PORT:-8000}:8000"
+      # FA_LISTEN_IP 控制宿主机监听地址；容器内 API 固定监听 8000。
+      - "${FA_LISTEN_IP:-127.0.0.1}:${FA_PORT:-8080}:8000"
     environment:
       FA_ENCRYPTION_KEY: ${FA_ENCRYPTION_KEY:?FA_ENCRYPTION_KEY is required}
       FA_ADMIN_USER: ${FA_ADMIN_USER:-admin}
