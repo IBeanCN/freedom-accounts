@@ -5,6 +5,8 @@
 2. import it below and append the class to `ADAPTERS`;
 3. done — registry manifest feeds `/api/meta`, validation and dispatch.
 """
+import inspect
+
 from .adapters.base import FlowAdapter
 from .adapters.password import PasswordAdapter
 from .adapters.sub2api import Sub2ApiAdapter
@@ -14,6 +16,7 @@ from .adapters.cpr import CprAdapter
 ADAPTERS: list[type] = [PasswordAdapter, Sub2ApiAdapter, CprAdapter]
 
 ADAPTER_MAP: dict[str, type] = {a.key: a for a in ADAPTERS}
+_RUN_CONTEXT_SUPPORTED: dict[object, bool] = {}
 
 # login types exposed to the frontend dropdown (label shown, key stored)
 LOGIN_TYPES: list[dict] = [a.manifest() for a in ADAPTERS]
@@ -42,7 +45,28 @@ def get_adapter(login_type: str):
 
 
 async def run_flow(login_type: str, ctx, username: str, password: str,
-                   totp_secret: str, login_url: str, steps: list) -> dict:
-    """Async entry used by the scheduler (all engines are native async now)."""
+                   totp_secret: str, login_url: str, steps: list,
+                   group: dict | None = None, account: dict | None = None) -> dict:
+    """Async entry used by the scheduler (all engines are native async now).
+
+    ``group`` / ``account`` carry the DB rows (extra kwargs, keyword-only in
+    spirit): adapters needing upstream context (e.g. sub2api OAuth via
+    upstream_key / remote_id) read them; legacy adapters ignore them.
+    """
     fn = pick_flow(login_type, sync=False)
+    supports_context = _RUN_CONTEXT_SUPPORTED.get(fn)
+    if supports_context is None:
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            params = {}
+        supports_context = any(
+            name in ("group", "account")
+            or param.kind == inspect.Parameter.VAR_KEYWORD
+            for name, param in params.items()
+        )
+        _RUN_CONTEXT_SUPPORTED[fn] = supports_context
+    if supports_context:
+        return await fn(ctx, username, password, totp_secret, login_url, steps,
+                        group=group, account=account)
     return await fn(ctx, username, password, totp_secret, login_url, steps)

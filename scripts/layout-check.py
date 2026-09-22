@@ -97,7 +97,7 @@ MEASURE_GROUPS_JS = """
     const toggle = c.querySelector('.group-toggle');
     const tr = toggle.getBoundingClientRect();
     const btns = [...c.querySelectorAll('.group-actions .btn')]
-      .filter((b) => !b.classList.contains('hidden'));   // 「打开浏览器」在 CDP 模式下隐藏，不计入
+      .filter((b) => !b.classList.contains('hidden'));   // 本地 SDK 专属按钮在 CDP 模式下隐藏，不计入
     const headText = c.querySelector('.group-head-text').getBoundingClientRect();
     out.cards.push({
       name: nameEl.textContent.trim(),
@@ -105,6 +105,7 @@ MEASURE_GROUPS_JS = """
       top: Math.round(r.top + window.scrollY), left: Math.round(r.left),
       btnCount: btns.length,
       openBtn: btns.filter((b) => b.dataset.act === 'open-browser' && !b.classList.contains('hidden')).length,
+      closeBtn: btns.filter((b) => b.dataset.act === 'close-browser' && !b.classList.contains('hidden')).length,
       toggleW: Math.round(tr.width), toggleH: Math.round(tr.height),
       hasDot: !!dot,
       headTextLeft: Math.round(headText.left),
@@ -188,11 +189,13 @@ def audit_groups(data, label):
         first_row = [c for c in cards if c["top"] == cards[0]["top"]]
         check(all(c["top"] == first_row[0]["top"] for c in first_row), "首行分组卡顶部对齐")
         check(all(c["w"] == first_row[0]["w"] for c in first_row), "首行分组卡等宽")
-        check(all(c["btnCount"] == 6 for c in cards),
-              "每张卡片 6 个操作按钮（5 个基础 + 「打开浏览器」）（实际 %s）" % sorted({c["btnCount"] for c in cards}))
-        # 「打开浏览器」按钮：本地 SDK 模式（未配置 CDP）应显示；此处服务无 CDP，应有且仅多 1 个
+        check(all(c["btnCount"] == 7 for c in cards),
+              "每张卡片 7 个操作按钮（5 个基础 + 打开/关闭浏览器）（实际 %s）" % sorted({c["btnCount"] for c in cards}))
+        # 本地 SDK 专属按钮：未配置 CDP 时均应显示；此处服务无 CDP，应有且仅各 1 个
         check(all(c["openBtn"] == 1 for c in cards),
               "本地 SDK 模式下每卡出现 1 个「打开浏览器」按钮（实际 %s）" % sorted({c["openBtn"] for c in cards}))
+        check(all(c["closeBtn"] == 1 for c in cards),
+              "本地 SDK 模式下每卡出现 1 个「关闭浏览器」按钮（实际 %s）" % sorted({c["closeBtn"] for c in cards}))
         check(all(c["toggleW"] == 30 and c["toggleH"] == 30 for c in cards),
               "展开箭头复用 .icon-btn 尺寸 30×30（实际 %s）" % sorted({(c["toggleW"], c["toggleH"]) for c in cards}))
 

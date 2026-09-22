@@ -1,29 +1,32 @@
 """Tasks & settings & system routers."""
+import ipaddress
 import json
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..core import database, settings
+from ..core import tasks
 from ..automation import browser as browser_mod
 from .deps import require_admin
 
 router = APIRouter(prefix="/api", tags=["system"])
 
 
-# ---------------- meta (registries for frontend dropdowns) ----------------
+# ---------------- meta (registries for authenticated frontend dropdowns) ----------------
 @router.get("/meta")
-async def get_meta():
-    """Adapter/registry manifests: login types (flow adapters) & group types (platforms)."""
+async def get_meta(_: None = Depends(require_admin)):
+    """Adapter/registry manifests: login types (flow adapters), group types (platforms), fingerprint option pools."""
     from ..automation.flows import LOGIN_TYPES
     from ..automation.platforms import GROUP_TYPES
-    return {"login_types": LOGIN_TYPES, "group_types": GROUP_TYPES}
+    from ..automation.fingerprint import FP_OPTIONS
+    return {"login_types": LOGIN_TYPES, "group_types": GROUP_TYPES, "fp_options": FP_OPTIONS}
 
 
 # ---------------- tasks ----------------
 @router.get("/tasks")
 async def list_tasks(group_id: int | None = None, status: str | None = None,
-                     limit: int = 100):
+                     limit: int = 100, _: None = Depends(require_admin)):
     db = await database.get_db()
     sql = """SELECT t.*, a.username, g.name AS group_name
              FROM tasks t LEFT JOIN accounts a ON a.id=t.account_id
@@ -48,7 +51,7 @@ async def list_tasks(group_id: int | None = None, status: str | None = None,
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: int):
+async def get_task(task_id: int, _: None = Depends(require_admin)):
     db = await database.get_db()
     row = await db.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
     t = await row.fetchone()
@@ -121,7 +124,7 @@ _COUNTRY_LOCALE = {
     "CN": "zh-CN", "TW": "zh-TW", "HK": "zh-HK", "SG": "zh-SG",
     "JP": "ja-JP", "KR": "ko-KR",
     "US": "en-US", "GB": "en-GB", "AU": "en-AU", "CA": "en-CA",
-    "IN": "en-IN", "PH": "en-PH", "SG_": "en-SG",
+    "IN": "en-IN", "PH": "en-PH",
     "DE": "de-DE", "AT": "de-AT", "CH": "de-CH",
     "FR": "fr-FR", "BE": "fr-BE",
     "ES": "es-ES", "MX": "es-MX", "AR": "es-AR",
@@ -144,7 +147,7 @@ def locale_for_country(country_code: str) -> str:
 
 
 @router.get("/geo/lookup")
-async def geo_lookup(ip: str = ""):
+async def geo_lookup(ip: str = "", _: None = Depends(require_admin)):
     """Resolve an exit IP (or this server's own exit IP when omitted) to geo info.
 
     Chain: with an explicit ip -> ipwho.is/{ip}. Without one -> learn the exit
@@ -155,6 +158,11 @@ async def geo_lookup(ip: str = ""):
     import httpx
 
     ip = (ip or "").strip()
+    if ip:
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return {"ok": False, "ip": ip, "error": "无效的 IP 地址"}
     async with httpx.AsyncClient(timeout=12, trust_env=False) as c:
         if ip:
             return _geo_parse(ip, await _geo_fetch(c, ip))        # 1) learn own exit IP via ipify, then resolve it

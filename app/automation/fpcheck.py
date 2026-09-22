@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 
 from ..core import config, database, settings
+from ..core import tasks
 from . import browser as browser_mod
 
 # "检测中" is the site's in-progress marker; anything else means finished.
@@ -28,7 +29,33 @@ DETECT_TIMEOUT = 120     # s — max wait for the badge to leave 检测中
 # both the group override and the system setting are empty => refuse to run
 NO_URL_MSG = "未配置指纹检测地址，请先在「系统设置 → 指纹检测站点」填写，或在分组编辑中单独配置"
 
-_sem = asyncio.Semaphore(2)   # at most two concurrent check browsers
+# CloakBrowser Pro plan caps concurrent live sessions; an over-cap launch may
+# complete the CDP handshake and THEN be killed by the license guard (exit 76),
+# which surfaces downstream as a bare "Target page has been closed" — easy to
+# misread as a proxy failure. Detect and report the real cause (dynamic plan
+# cap comes from the license server when reachable).
+def _session_limit_msg() -> str:
+    try:
+        return browser_mod.session_limit_message()
+    except Exception:
+        return ("浏览器会话数达到套餐上限（CloakBrowser 计划并发），"
+                "请先关闭已打开的指纹浏览器窗口再检测")
+
+
+_TARGET_CLOSED_MARKS = (
+    "Target page has been closed", "Target closed", "target crashed",
+    "Browser has been closed", "Session closed",
+)
+
+
+def _is_session_killed(msg: str) -> bool:
+    """Heuristic: the launch succeeded but the browser died before navigation."""
+    m = (msg or "").lower()
+    if "session limit" in m or "exitcode=76" in m:
+        return True
+    return any(mark.lower() in m for mark in _TARGET_CLOSED_MARKS)
+
+_sem = asyncio.Semaphore(1)   # CloakBrowser plan caps live sessions; keep 1 seat spare for manual browser
 
 
 async def resolve_check_url(group_row: dict | None) -> str | None:
@@ -76,10 +103,17 @@ async def _goto_check_page(page, url: str, proxy_server: str) -> None:
 
     检测必须经由账号/分组代理执行（直连的结果对指纹无意义），所以代理不可达时
     明确报出代理地址，而不是抛 Playwright 原始堆栈。
+    例外：页面/浏览器已被关闭（CloakBrowser 套餐会话数超限静默杀进程）时，
+    报会话上限而不是误报代理——此时代理是无辜的。
     """
     try:
         await page.goto(url, timeout=LOAD_TIMEOUT, wait_until="domcontentloaded")
     except Exception as e:
+        msg = str(e)
+        if _is_session_killed(msg):
+            # 抛 SessionLimitError：调用方（run_check/run_group_check）会自动
+            # 清掉占座的手动浏览器窗口并整体重试一次。
+            raise browser_mod.SessionLimitError(_session_limit_msg()) from e
         if proxy_server:
             hostport = proxy_server.rsplit("@", 1)[-1]   # mask credentials
             raise RuntimeError(
@@ -117,8 +151,42 @@ async def _read_badge(page) -> tuple[str, str]:
     raise RuntimeError("等待检测结果超时（risk-badge 一直处于检测中）")
 
 
+async def _run_check_once(a, g, url: str, mode: str) -> tuple[bool, dict]:
+    """One attempt: launch -> goto -> detect -> read. Returns (ok, payload)."""
+    import json
+    account_id = a["id"]
+    async with _sem:
+        closer = None
+        try:
+            proxy_server = await browser_mod.resolve_proxy(
+                a["proxy_id"] if "proxy_id" in a.keys() else None,
+                g["proxy_id"] if "proxy_id" in g.keys() else None)
+            closer, ctx, engine, _ = await browser_mod.launch_with_autocleanup(
+                json.loads(a["fingerprint"] or "{}"), mode,
+                profile_key=f"g{a['group_id']}_a{account_id}_fpcheck",
+                proxy_server=proxy_server)
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await _goto_check_page(page, url, proxy_server)
+            await _click_retest(page)
+            result = await _read_badge(page)
+            await save_result(account_id, result)
+            return True, {"ok": True, "result": result, "engine": engine}
+        except Exception as e:
+            await save_result(account_id, f"失败: {str(e)[:80]}")
+            return False, {"ok": False, "error": str(e)}
+        finally:
+            if closer is not None:
+                with contextlib.suppress(Exception):
+                    await closer()
+
+
 async def run_check(account_id: int) -> dict:
-    """Full check for one account; runs as a background task."""
+    """Full check for one account; runs as a background task.
+
+    On SessionLimitError (browser killed by the plan's concurrent-session cap —
+    typically a manual "打开浏览器" window holding a seat), reclaim those seats
+    automatically and retry once instead of asking the user to close windows.
+    """
     db = await database.get_db()
     a = await (await db.execute("SELECT * FROM accounts WHERE id=?", (account_id,))).fetchone()
     if not a:
@@ -132,41 +200,18 @@ async def run_check(account_id: int) -> dict:
         return {"ok": False, "error": NO_URL_MSG}
 
     await set_checking(account_id)
-    import json
-    try:
-        fp_raw = a["fingerprint"] or "{}"
-        fp = json.loads(fp_raw) if isinstance(fp_raw, str) else fp_raw
-    except Exception:
-        fp = {}
-
     mode = await browser_mod.resolve_browser_mode(a["browser_mode"], g["browser_mode"])
-    async with _sem:
-        closer = None
-        try:
-            proxy_server = await browser_mod.resolve_proxy(
-                a["proxy_id"] if "proxy_id" in a.keys() else None,
-                g["proxy_id"] if "proxy_id" in g.keys() else None)
-            closer, ctx, engine, _ = await browser_mod.launch_for_account(
-                fp, mode, profile_key=f"g{a['group_id']}_a{account_id}_fpcheck",
-                proxy_server=proxy_server)
-            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await _goto_check_page(page, url, proxy_server)
-            await _click_retest(page)
-            result = await _read_badge(page)
-            await save_result(account_id, result)
-            return {"ok": True, "result": result, "engine": engine}
-        except Exception as e:
-            await save_result(account_id, f"失败: {str(e)[:80]}")
-            return {"ok": False, "error": str(e)}
-        finally:
-            if closer is not None:
-                with contextlib.suppress(Exception):
-                    await closer()
+
+    ok, payload = await _run_check_once(a, g, url, mode)
+    if not ok and _is_session_killed(payload.get("error", "")):
+        await browser_mod.reclaim_manual_sessions()
+        ok, payload = await _run_check_once(a, g, url, mode)
+    return payload
 
 
 def start_check(account_id: int) -> asyncio.Task:
     """Fire-and-forget background check (used by the API endpoint)."""
-    return asyncio.create_task(run_check(account_id))
+    return tasks.spawn(run_check(account_id))
 
 
 # ---------------- group template check ----------------
@@ -190,9 +235,38 @@ async def save_group_result(group_id: int, result: str) -> None:
     await db.commit()
 
 
+async def _run_group_check_once(g, url: str, fp: dict, mode: str) -> tuple[bool, dict]:
+    """One attempt for the group template check."""
+    group_id = g["id"]
+    async with _sem:
+        closer = None
+        try:
+            proxy_server = await browser_mod.resolve_proxy(
+                None, g["proxy_id"] if "proxy_id" in g.keys() else None)
+            closer, ctx, engine, _ = await browser_mod.launch_with_autocleanup(
+                fp, mode, profile_key=f"g{group_id}_tplcheck",
+                proxy_server=proxy_server)
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await _goto_check_page(page, url, proxy_server)
+            await _click_retest(page)
+            result = await _read_badge(page)
+            await save_group_result(group_id, result)
+            return True, {"ok": True, "result": result, "engine": engine}
+        except Exception as e:
+            await save_group_result(group_id, f"失败: {str(e)[:80]}")
+            return False, {"ok": False, "error": str(e)}
+        finally:
+            if closer is not None:
+                with contextlib.suppress(Exception):
+                    await closer()
+
+
 async def run_group_check(group_id: int) -> dict:
-    """Check the group's fingerprint template with one representative fingerprint."""
-    import json
+    """Check the group's fingerprint template with one representative fingerprint.
+
+    Auto-reclaims manual session seats and retries once on SessionLimitError
+    (same self-healing as run_check).
+    """
     from . import fingerprint as fp_mod
 
     db = await database.get_db()
@@ -213,30 +287,15 @@ async def run_group_check(group_id: int) -> dict:
 
     await set_group_checking(group_id)
     mode = await browser_mod.resolve_browser_mode("inherit", g["browser_mode"])
-    async with _sem:
-        closer = None
-        try:
-            proxy_server = await browser_mod.resolve_proxy(
-                None, g["proxy_id"] if "proxy_id" in g.keys() else None)
-            closer, ctx, engine, _ = await browser_mod.launch_for_account(
-                fp, mode, profile_key=f"g{group_id}_tplcheck",
-                proxy_server=proxy_server)
-            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await _goto_check_page(page, url, proxy_server)
-            await _click_retest(page)
-            result = await _read_badge(page)
-            await save_group_result(group_id, result)
-            return {"ok": True, "result": result, "engine": engine}
-        except Exception as e:
-            await save_group_result(group_id, f"失败: {str(e)[:80]}")
-            return {"ok": False, "error": str(e)}
-        finally:
-            if closer is not None:
-                with contextlib.suppress(Exception):
-                    await closer()
+
+    ok, payload = await _run_group_check_once(g, url, fp, mode)
+    if not ok and _is_session_killed(payload.get("error", "")):
+        await browser_mod.reclaim_manual_sessions()
+        ok, payload = await _run_group_check_once(g, url, fp, mode)
+    return payload
 
 
 def start_group_check(group_id: int) -> dict:
     """Fire-and-forget template check (used by the API endpoint)."""
-    asyncio.create_task(run_group_check(group_id))
+    tasks.spawn(run_group_check(group_id))
     return {"ok": True, "group_id": group_id}

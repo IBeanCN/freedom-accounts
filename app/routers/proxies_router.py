@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..core import database
+from ..core import crypto
+from ..core import tasks
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"],
@@ -103,7 +105,10 @@ async def probe(server: str, timeout: float = 15.0) -> dict:
 def _row_dict(r) -> dict:
     d = dict(r)
     d["custom_geo"] = bool(d.get("custom_geo"))
-    d["server_masked"] = _mask_server(d.get("server") or "")
+    # decrypt the stored (encrypted) server value, then mask for display;
+    # the raw server field is never returned to the frontend
+    plain_server = crypto.decrypt(d.pop("server", "") or "")
+    d["server_masked"] = _mask_server(plain_server)
     d["linked_accounts"] = d.pop("linked_accounts", 0) or 0
     d["testing"] = False
     return d
@@ -121,7 +126,7 @@ async def list_proxies():
 
 @router.post("")
 async def create_proxy(body: ProxyBody):
-    server = _normalize_server(body.server)
+    server = crypto.encrypt(_normalize_server(body.server))
     db = await database.get_db()
     cur = await db.execute(
         """INSERT INTO proxies(name,server,custom_geo,country,region,city,timezone,locale)
@@ -140,8 +145,9 @@ async def update_proxy(proxy_id: int, body: ProxyBody):
     old = await row.fetchone()
     if not old:
         raise HTTPException(404, "proxy not found")
-    # keep the stored address when the form submits an empty one
-    server = _normalize_server(body.server) if body.server.strip() else old["server"]
+    # keep the stored (encrypted) address when the form submits an empty one;
+    # new address is normalized, then encrypted before write
+    server = crypto.encrypt(_normalize_server(body.server)) if body.server.strip() else old["server"]
     await db.execute(
         """UPDATE proxies SET name=?,server=?,custom_geo=?,country=?,region=?,city=?,timezone=?,locale=?
            WHERE id=?""",
@@ -161,6 +167,9 @@ async def delete_proxy(proxy_id: int):
     n = await (await db.execute("SELECT COUNT(*) FROM accounts WHERE proxy_id=?", (proxy_id,))).fetchone()
     if (n and n[0]) > 0:
         raise HTTPException(409, f"该代理仍被 {n[0]} 个账号关联，请先解除关联")
+    groups = await (await db.execute("SELECT COUNT(*) FROM groups WHERE proxy_id=?", (proxy_id,))).fetchone()
+    if (groups and groups[0]) > 0:
+        raise HTTPException(409, f"该代理仍被 {groups[0]} 个分组关联，请先解除关联")
     await db.execute("DELETE FROM proxies WHERE id=?", (proxy_id,))
     await db.commit()
     return {"ok": True}
@@ -178,7 +187,7 @@ async def test_proxy(proxy_id: int):
     p = await row.fetchone()
     if not p:
         raise HTTPException(404, "proxy not found")
-    server = p["server"]
+    server = crypto.decrypt(p["server"])
     probe_bg(proxy_id, server)
     return {"ok": True, "status": "检测中"}
 
@@ -197,4 +206,4 @@ def probe_bg(proxy_id: int, server: str) -> None:
              "" if result["ok"] else result.get("error", "连接失败"),
              proxy_id))
         await db.commit()
-    asyncio.get_running_loop().create_task(_run())
+    tasks.spawn(_run())

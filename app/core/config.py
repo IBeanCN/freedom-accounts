@@ -49,8 +49,17 @@ DB_PATH = DATA_DIR / "platform.db"
 ADMIN_USER = os.environ.get("FA_ADMIN_USER", "admin")
 # Default admin password; change it on the System Settings page after first login.
 INITIAL_ADMIN_PASSWORD = os.environ.get("FA_ADMIN_PASSWORD", "admin123")
-JWT_SECRET = os.environ.get("FA_JWT_SECRET", "change-me-in-production-please")
+DEFAULT_JWT_SECRET = "change-me-in-production-please"
+JWT_SECRET = os.environ.get("FA_JWT_SECRET", DEFAULT_JWT_SECRET)
 JWT_EXPIRE_HOURS = int(os.environ.get("FA_JWT_EXPIRE_HOURS", "24"))
+
+# Encryption key for sensitive DB fields (passwords, TOTP, proxy auth, upstream keys)
+ENCRYPTION_KEY = os.environ.get("FA_ENCRYPTION_KEY", "").strip()
+if not ENCRYPTION_KEY:
+    raise RuntimeError(
+        "FA_ENCRYPTION_KEY is required in .env; generate one with: "
+        "python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
 
 # Server
 HOST = os.environ.get("FA_HOST", "127.0.0.1")
@@ -68,3 +77,9 @@ INTERVAL_MAX_MS = 600000
 
 for _d in (DATA_DIR, LOGS_DIR, BROWSER_PROFILES_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+if HOST not in {"127.0.0.1", "localhost"}:
+    if JWT_SECRET == DEFAULT_JWT_SECRET:
+        raise RuntimeError("FA_JWT_SECRET must be changed before non-local deployment")
+    if INITIAL_ADMIN_PASSWORD == "admin123":
+        raise RuntimeError("FA_ADMIN_PASSWORD must be changed before non-local deployment")

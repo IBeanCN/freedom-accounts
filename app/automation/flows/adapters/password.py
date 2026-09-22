@@ -59,7 +59,7 @@ def run_login_sync(ctx, username: str, password: str, totp_secret: str,
             "input[name=code], input[name=totp], input[autocomplete=one-time-code], #code")
         if otp_input.count() > 0:
             otp_input.first.fill(otp)
-            steps.append({"t": _now(), "step": "fill_2fa", "detail": otp, "ok": True})
+            steps.append({"t": _now(), "step": "fill_2fa", "detail": "***", "ok": True})
             submit2 = page.locator(
                 "button[type=submit], button:has-text('验证'), button:has-text('Verify')")
             if submit2.count() > 0:
@@ -125,7 +125,7 @@ async def run_login_async(ctx, username: str, password: str, totp_secret: str,
             "input[name=code], input[name=totp], input[autocomplete=one-time-code], #code")
         if await otp_input.count() > 0:
             await otp_input.first.fill(otp)
-            steps.append({"t": _now(), "step": "fill_2fa", "detail": otp, "ok": True})
+            steps.append({"t": _now(), "step": "fill_2fa", "detail": "***", "ok": True})
             submit2 = page.locator(
                 "button[type=submit], button:has-text('验证'), button:has-text('Verify')")
             if await submit2.count() > 0:

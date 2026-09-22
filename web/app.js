@@ -15,7 +15,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-let TOKEN = localStorage.getItem("fa_token") || "";
+let TOKEN = "";
 const state = {
   tab: "groups",
   groups: [],
@@ -27,6 +27,7 @@ const state = {
   meta: { login_types: [], group_types: [] },
   proxies: [],
   editingProxy: null,
+  fpBase: {},
   defaultGeo: null,          // global default geo from settings (prefill source)
   proxyGeoPrefilled: false,  // geo fields already backfilled in current modal session
   expandedGroups: new Set(), // 操作项展开态：只由箭头 .group-toggle 写入，与选中态 / 账号列表完全解耦
@@ -84,7 +85,6 @@ async function api(path, opts = {}) {
     ...opts,
     headers: {
       "Content-Type": "application/json",
-      ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
       ...(opts.headers || {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -274,13 +274,14 @@ async function loadProxiesSilent() {
   } catch (_) { state.proxies = []; }
 }
 
-/* 注册表下拉（/api/meta）：分组类型 = 平台注册表，上号类型 = 流程适配器 */
+/* 注册表下拉（/api/meta）：分组类型 = 平台注册表，上号类型 = 流程适配器，fp_options = 指纹候选池 */
 async function loadMeta() {
   try {
     state.meta = await api("/api/meta");
-  } catch { state.meta = { login_types: [], group_types: [] }; }
+  } catch { state.meta = { login_types: [], group_types: [], fp_options: null }; }
   fillSelect($("#g-group_type"), state.meta.group_types.map((p) => ({ value: p.key, label: p.label })), "请选择分组类型");
   fillSelect($("#g-login_type"), state.meta.login_types.map((a) => ({ value: a.key, label: a.label })), "请选择上号类型");
+  buildFpStaticSelects();
 }
 
 function fillSelect(sel, items, placeholder) {
@@ -359,6 +360,7 @@ function groupCard(g) {
     <div class="group-actions" id="group-actions-${g.id}">
       <button class="btn btn-primary btn-sm" type="button" data-act="start">一键上号</button>
       <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="open-browser">打开浏览器</button>
+      <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="close-browser">关闭浏览器</button>
       <button class="btn btn-secondary btn-sm" type="button" data-act="sync">同步账号</button>
       <button class="btn btn-secondary btn-sm" type="button" data-act="fpcheck" ${checking ? "disabled" : ""}>${checking ? "检测中…" : "指纹检测"}</button>
       <button class="btn btn-secondary btn-sm" type="button" data-act="edit">编辑</button>
@@ -369,6 +371,7 @@ function groupCard(g) {
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (act === "start") { e.stopPropagation(); return groupStart(g); }
     if (act === "open-browser") { e.stopPropagation(); return groupOpenBrowser(g); }
+    if (act === "close-browser") { e.stopPropagation(); return groupCloseBrowser(g); }
     if (act === "sync") { e.stopPropagation(); return groupSync(g); }
     if (act === "fpcheck") { e.stopPropagation(); return groupFpCheck(g); }
     if (act === "edit") { e.stopPropagation(); return openGroupModal(g); }
@@ -513,12 +516,18 @@ async function groupOpenBrowser(g) {
   } catch (e) { toast(e.message, true); }
 }
 
+async function groupCloseBrowser(g) {
+  try {
+    const d = await api(`/api/groups/${g.id}/close-browser`, { method: "POST", body: {} });
+    toast(d.closed ? `分组 ${g.name} 的浏览器已关闭` : `分组 ${g.name} 没有打开的浏览器`);
+  } catch (e) { toast(e.message, true); }
+}
 /** 「打开浏览器」按钮显隐：仅本地 SDK 引擎（未配置 cloakserve CDP）时可见。
  *  先写 state.localEngine 再改 DOM —— loadGroups 与 loadEngine 并行时，
  *  后渲染的卡片直接按状态生成，不依赖「显隐应用到已存在 DOM」的时序。 */
 function applyOpenBrowserVisibility(cdpUrl) {
   state.localEngine = !(cdpUrl || "").trim();
-  $$('[data-act="open-browser"]').forEach((b) => b.classList.toggle("hidden", !state.localEngine));
+  $$('[data-act="open-browser"], [data-act="close-browser"]').forEach((b) => b.classList.toggle("hidden", !state.localEngine));
 }
 
 $("#btn-group-start").addEventListener("click", async () => {
@@ -607,6 +616,74 @@ function addTempOption(sel, value) {
   sel.value = value;
 }
 
+/* ---------- 指纹选项池（单一来源：/api/meta 的 fp_options，与后端随机共用一份数据） ---------- */
+
+const FP_FALLBACK = {
+  platforms: ["windows", "macos"],
+  brands: ["Chrome", "Edge", "Opera", "Vivaldi"],
+  brand_versions: Array.from({ length: 22 }, (_, i) => 130 + i),
+  gpus: {
+    windows: [{ vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)", label: "Intel UHD 630" }],
+    macos: [{ vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", label: "Apple M1" }],
+  },
+  screens: {
+    windows: [{ width: 1920, height: 1080 }],
+    macos: [{ width: 1440, height: 900 }],
+  },
+  cores: { windows: [8], macos: [8] },
+  memory: [4, 8],
+  timezones: ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Chicago", "Europe/London", "Europe/Berlin", "Asia/Singapore", "America/Los_Angeles"],
+  locales: ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"],
+};
+
+function fpOptions() { return state.meta.fp_options || FP_FALLBACK; }
+
+/** 平台变化后级联刷新 GPU / 分辨率 / CPU 三个平台相关下拉；keepVal 兼容存量自由值 */
+function refreshFpDependentSelects(pfx, platform, keepVals = {}) {
+  const opt = fpOptions();
+  const p = platform || "windows";
+  const fill = (id, items, toVal, toLabel) => {
+    const sel = $(id);
+    const cur = keepVals[id] ?? sel.value;
+    sel.innerHTML = `<option value="">默认</option>`;
+    items.forEach((it) => {
+      const o = document.createElement("option");
+      o.value = toVal(it); o.textContent = toLabel(it);
+      sel.appendChild(o);
+    });
+    if (cur) {
+      sel.value = cur;
+      // 存量值不在候选（历史数据 / 兜底池）：回填临时项避免丢数据
+      if (sel.value !== cur) addTempOption(sel, cur);
+    }
+  };
+  fill(`${pfx}-gpu`, opt.gpus[p] || [], (g) => g.renderer, (g) => g.label);
+  fill(`${pfx}-screen`, opt.screens[p] || [], (s) => `${s.width}x${s.height}`, (s) => `${s.width} × ${s.height}`);
+  fill(`${pfx}-cores`, opt.cores[p] || [], (n) => String(n), (n) => `${n} 核`);
+}
+
+/** 组装静态下拉（时区 / 语言 / 内存）——两处表单共用，加载 meta 后调用一次 */
+function buildFpStaticSelects() {
+  const opt = fpOptions();
+  const fill = (id, items) => {
+    const sel = $(id);
+    if (!sel || sel.options.length > 1) return;
+    items.forEach((v) => {
+      const o = document.createElement("option");
+      o.value = String(v); o.textContent = String(v);
+      sel.appendChild(o);
+    });
+  };
+  ["#fp-tz", "#gt-tz"].forEach((id) => fill(id, opt.timezones));
+  ["#fp-locale", "#gt-locale"].forEach((id) => fill(id, opt.locales));
+  ["#fp-mem", "#gt-mem"].forEach((id) => fill(id, opt.memory));
+  // 平台相关下拉按当前平台值刷一遍（初始默认 windows 池）
+  refreshFpDependentSelects("#fp", $("#fp-platform").value);
+  refreshFpDependentSelects("#gt", $("#gt-platform").value);
+}
+
+/* ---------- 分组表单 ---------- */
+
 /* 分组类型 -> 上号地址占位/提示、上号类型默认值联动 */
 function syncGroupTypeHints() {
   const key = $("#g-group_type").value;
@@ -629,20 +706,26 @@ $("#g-group_type").addEventListener("change", () => {
 
 $("#g-login_type").addEventListener("change", syncGroupTypeHints);
 
+/* 分组指纹模板：屏幕/GPU 合并为一个下拉，读写时拆合为 screen_width/screen_height 与 gpu_renderer */
 const TPL_FIELDS = [
   ["#gt-platform", "platform", "str"],
   ["#gt-brand", "brand", "str"],
   ["#gt-tz", "timezone", "str"],
-  ["#gt-w", "screen_width", "num"],
-  ["#gt-h", "screen_height", "num"],
   ["#gt-locale", "locale", "str"],
   ["#gt-cores", "hardware_concurrency", "num"],
   ["#gt-mem", "device_memory", "num"],
-  ["#gt-gpu_renderer", "gpu_renderer", "str"],
 ];
 
 function fillTplForm(tpl) {
   for (const [id, key] of TPL_FIELDS) $(id).value = tpl[key] ?? "";
+  $("#gt-screen").value = tpl.screen_width && tpl.screen_height ? `${tpl.screen_width}x${tpl.screen_height}` : "";
+  if ($("#gt-screen").value !== (tpl.screen_width && tpl.screen_height ? `${tpl.screen_width}x${tpl.screen_height}` : "")) {
+    addTempOption($("#gt-screen"), `${tpl.screen_width}x${tpl.screen_height}`);
+  }
+  $("#gt-gpu").value = tpl.gpu_renderer || "";
+  if ($("#gt-gpu").value !== (tpl.gpu_renderer || "")) addTempOption($("#gt-gpu"), tpl.gpu_renderer || "");
+  // 刷新平台相关下拉候选（screen/cores），保持与所选平台一致
+  refreshFpDependentSelects("#gt", tpl.platform || $("#gt-platform").value);
 }
 
 function readTplForm() {
@@ -652,11 +735,21 @@ function readTplForm() {
     if (!v) continue;
     tpl[key] = type === "num" ? +v : v;
   }
+  if ($("#gt-screen").value) {
+    const [w, h] = $("#gt-screen").value.split("x").map(Number);
+    if (w && h) { tpl.screen_width = w; tpl.screen_height = h; }
+  }
+  if ($("#gt-gpu").value) tpl.gpu_renderer = $("#gt-gpu").value;
   return tpl;
 }
 
+/* 分组模板平台切换 -> 级联刷新 GPU / 分辨率 / CPU 候选 */
+$("#gt-platform").addEventListener("change", () => {
+  refreshFpDependentSelects("#gt", $("#gt-platform").value);
+});
+
 $("#btn-gtmpl-random").addEventListener("click", () => {
-  const fp = randomFpLocal();
+  const fp = randomFp();
   delete fp.seed; // template never pins a seed
   fillTplForm(fp);
 });
@@ -673,6 +766,7 @@ const FP_FIELD_LABEL = {
   seed: "种子 seed",
   platform: "平台",
   brand: "品牌",
+  brand_version: "浏览器版本",
   screen_width: "屏幕宽",
   screen_height: "屏幕高",
   timezone: "时区",
@@ -681,6 +775,13 @@ const FP_FIELD_LABEL = {
   device_memory: "内存",
   gpu_vendor: "WebGL 厂商",
   gpu_renderer: "WebGL 渲染器",
+  webrtc_ip: "WebRTC IP",
+  storage_quota_mb: "存储配额",
+  noise: "指纹噪声",
+  user_agent: "User Agent",
+  viewport_w: "视口宽",
+  viewport_h: "视口高",
+  geoip: "GeoIP",
 };
 
 /** 归一化比较值：空值统一为 ""，数字与等值字符串视为相同 */
@@ -746,7 +847,9 @@ $("#btn-gtmpl-geo").addEventListener("click", async () => {
   if (!geoHasData(geo) && geoHasData(state.defaultGeo)) geo = state.defaultGeo;
   if (!geoHasData(geo)) return warnNoGeoData();
   $("#gt-tz").value = geo.timezone || "";
+  if (geo.timezone && $("#gt-tz").value !== geo.timezone) addTempOption($("#gt-tz"), geo.timezone);
   $("#gt-locale").value = geo.locale || "";
+  if (geo.locale && $("#gt-locale").value !== geo.locale) addTempOption($("#gt-locale"), geo.locale);
   toast(`已回填：${[geo.country, geo.city, geo.timezone, geo.locale].filter(Boolean).join(" / ")}`);
 });
 
@@ -988,6 +1091,7 @@ function pollFpCheck(accountId, gid, tried = 0) {
 function openAccountModal(a = null) {
   if (!state.currentGroup) { toast("请先选择分组", true); return; }
   state.editingAccount = a;
+  state.fpBase = safeJson(a?.fingerprint, {});
   $("#dlg-account-title").textContent = a ? `编辑账号 #${a.id}` : "添加账号";
   $("#a-username").value = a?.username || "";
   $("#a-password").value = "";
@@ -997,18 +1101,35 @@ function openAccountModal(a = null) {
   $("#a-remark").value = a?.remark || "";
   fillProxySelect(a?.proxy_id || "");
   const fp = a?.fingerprint || {};
+  fillAccountFpForm(fp);
+  $("#dlg-account").showModal();
+}
+
+/** 账号指纹表单回填：seed 手填，其余全部下拉（GPU/分辨率合并单选） */
+function fillAccountFpForm(fp) {
+  state.fpBase = { ...(fp || {}) };
   $("#fp-seed").value = fp.seed || "";
   $("#fp-platform").value = fp.platform || "";
   $("#fp-brand").value = fp.brand || "";
-  $("#fp-w").value = fp.screen_width || "";
-  $("#fp-h").value = fp.screen_height || "";
+  refreshFpDependentSelects("#fp", fp.platform || "");
+  $("#fp-screen").value = fp.screen_width && fp.screen_height ? `${fp.screen_width}x${fp.screen_height}` : "";
+  if (fp.screen_width && fp.screen_height && $("#fp-screen").value !== `${fp.screen_width}x${fp.screen_height}`) {
+    addTempOption($("#fp-screen"), `${fp.screen_width}x${fp.screen_height}`);
+  }
   $("#fp-tz").value = fp.timezone || "";
+  if (fp.timezone && $("#fp-tz").value !== fp.timezone) addTempOption($("#fp-tz"), fp.timezone);
   $("#fp-locale").value = fp.locale || "";
-  $("#fp-cores").value = fp.hardware_concurrency || "";
-  $("#fp-mem").value = fp.device_memory || "";
-  $("#fp-gpu_vendor").value = fp.gpu_vendor || "";
-  $("#fp-gpu_renderer").value = fp.gpu_renderer || "";
-  $("#dlg-account").showModal();
+  if (fp.locale && $("#fp-locale").value !== fp.locale) addTempOption($("#fp-locale"), fp.locale);
+  $("#fp-cores").value = fp.hardware_concurrency != null ? String(fp.hardware_concurrency) : "";
+  if (fp.hardware_concurrency != null && $("#fp-cores").value !== String(fp.hardware_concurrency)) {
+    addTempOption($("#fp-cores"), String(fp.hardware_concurrency));
+  }
+  $("#fp-mem").value = fp.device_memory != null ? String(fp.device_memory) : "";
+  if (fp.device_memory != null && $("#fp-mem").value !== String(fp.device_memory)) {
+    addTempOption($("#fp-mem"), String(fp.device_memory));
+  }
+  $("#fp-gpu").value = fp.gpu_renderer || "";
+  if (fp.gpu_renderer && $("#fp-gpu").value !== fp.gpu_renderer) addTempOption($("#fp-gpu"), fp.gpu_renderer);
 }
 
 $("#btn-new-account").addEventListener("click", () => openAccountModal());
@@ -1029,18 +1150,7 @@ function fillProxySelect(selected, selId = "#a-proxy_id", directLabel = "不使�
 }
 
 $("#btn-regen-fp").addEventListener("click", () => {
-  const fp = randomFpLocal();
-  $("#fp-seed").value = fp.seed;
-  $("#fp-platform").value = fp.platform;
-  $("#fp-brand").value = fp.brand;
-  $("#fp-w").value = fp.screen_width;
-  $("#fp-h").value = fp.screen_height;
-  $("#fp-tz").value = fp.timezone;
-  $("#fp-locale").value = fp.locale;
-  $("#fp-cores").value = fp.hardware_concurrency;
-  $("#fp-mem").value = fp.device_memory;
-  $("#fp-gpu_vendor").value = fp.gpu_vendor;
-  $("#fp-gpu_renderer").value = fp.gpu_renderer;
+  fillAccountFpForm(randomFp());
 });
 
 /* 账号指纹：回填已保存的时区数据（账号代理 > 分组代理 > 系统设置默认），不发起解析请求 */
@@ -1058,26 +1168,48 @@ $("#btn-fp-geo").addEventListener("click", async () => {
   if (!geoHasData(geo) && geoHasData(state.defaultGeo)) geo = state.defaultGeo;
   if (!geoHasData(geo)) return warnNoGeoData();
   $("#fp-tz").value = geo.timezone || "";
+  if (geo.timezone && $("#fp-tz").value !== geo.timezone) addTempOption($("#fp-tz"), geo.timezone);
   $("#fp-locale").value = geo.locale || "";
+  if (geo.locale && $("#fp-locale").value !== geo.locale) addTempOption($("#fp-locale"), geo.locale);
   toast(`已回填：${[geo.country, geo.city, geo.timezone, geo.locale].filter(Boolean).join(" / ")}`);
 });
 
+/** 账号指纹表单读取：可见字段可清空，表单未表达的字段保留在 fpBase 中。 */
 function readFpForm() {
   const v = (id) => $(id).value.trim();
-  const fp = {};
-  if (v("#fp-seed")) fp.seed = +v("#fp-seed");
-  if (v("#fp-platform")) fp.platform = v("#fp-platform");
-  if (v("#fp-brand")) fp.brand = v("#fp-brand");
-  if (v("#fp-w")) fp.screen_width = +v("#fp-w");
-  if (v("#fp-h")) fp.screen_height = +v("#fp-h");
-  if (v("#fp-tz")) fp.timezone = v("#fp-tz");
-  if (v("#fp-locale")) fp.locale = v("#fp-locale");
-  if (v("#fp-cores")) fp.hardware_concurrency = +v("#fp-cores");
-  if (v("#fp-mem")) fp.device_memory = +v("#fp-mem");
-  if (v("#fp-gpu_vendor")) fp.gpu_vendor = v("#fp-gpu_vendor");
-  if (v("#fp-gpu_renderer")) fp.gpu_renderer = v("#fp-gpu_renderer");
+  const fp = { ...(state.fpBase || {}) };
+  const setOrDelete = (key, value) => {
+    if (value === "" || value == null) delete fp[key];
+    else fp[key] = value;
+  };
+  setOrDelete("seed", v("#fp-seed") ? +v("#fp-seed") : "");
+  setOrDelete("platform", v("#fp-platform"));
+  setOrDelete("brand", v("#fp-brand"));
+  if (v("#fp-screen")) {
+    const [w, h] = v("#fp-screen").split("x").map(Number);
+    if (w && h) {
+      fp.screen_width = w;
+      fp.screen_height = h;
+    } else {
+      delete fp.screen_width;
+      delete fp.screen_height;
+    }
+  } else {
+    delete fp.screen_width;
+    delete fp.screen_height;
+  }
+  setOrDelete("timezone", v("#fp-tz"));
+  setOrDelete("locale", v("#fp-locale"));
+  setOrDelete("hardware_concurrency", v("#fp-cores") ? +v("#fp-cores") : "");
+  setOrDelete("device_memory", v("#fp-mem") ? +v("#fp-mem") : "");
+  setOrDelete("gpu_renderer", v("#fp-gpu"));
   return fp;
 }
+
+/* 账号指纹平台切换 -> 级联刷新 GPU / 分辨率 / CPU 候选 */
+$("#fp-platform").addEventListener("change", () => {
+  refreshFpDependentSelects("#fp", $("#fp-platform").value);
+});
 
 $("#form-account").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1085,7 +1217,7 @@ $("#form-account").addEventListener("submit", async (e) => {
     group_id: state.currentGroup,
     username: $("#a-username").value.trim(),
     password: $("#a-password").value || (state.editingAccount ? "__KEEP_OLD__" : ""),
-    totp_secret: $("#a-totp").value.trim(),
+    totp_secret: $("#a-totp").value.trim() || (state.editingAccount ? "__CLEAR__" : ""),
     browser_mode: $("#a-browser_mode").value,
     fingerprint: readFpForm(),
     enabled: $("#a-enabled").checked,
@@ -1109,19 +1241,29 @@ $("#form-account").addEventListener("submit", async (e) => {
   } catch (err) { toast(err.message, true); }
 });
 
-function randomFpLocal() {
-  const H = { 1280: 720, 1366: 768, 1440: 900, 1536: 864, 1600: 900, 1920: 1080 };
-  const w = [1280, 1366, 1440, 1536, 1600, 1920][Math.floor(Math.random() * 6)];
+/** 前端随机指纹：候选全部来自 fp_options（/api/meta 下发），与后端 generate_fingerprint 同源自洽。
+ *  gpu_vendor 不生成 —— CloakBrowser 按渲染器自动推断，显式填写反而可能不一致。 */
+function randomFp() {
+  const opt = fpOptions();
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const platform = pick(opt.platforms);
+  const gpu = pick(opt.gpus[platform] || []);
+  const screen = pick(opt.screens[platform] || []);
   return {
     seed: Math.floor(Math.random() * 1e9),
-    platform: Math.random() > 0.5 ? "windows" : "macos",
-    brand: ["Chrome", "Edge", "Opera", "Vivaldi"][Math.floor(Math.random() * 4)],
-    screen_width: w,
-    screen_height: H[w],
-    timezone: ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "Europe/London", "Asia/Singapore"][Math.floor(Math.random() * 5)],
-    locale: ["zh-CN", "en-US", "ja-JP", "de-DE"][Math.floor(Math.random() * 4)],
-    hardware_concurrency: [4, 6, 8, 12, 16][Math.floor(Math.random() * 5)],
-    device_memory: [4, 8, 16][Math.floor(Math.random() * 3)],
+    platform,
+    brand: pick(opt.brands),
+    brand_version: pick(opt.brand_versions || []),
+    gpu_renderer: gpu.renderer,
+    screen_width: screen.width,
+    screen_height: screen.height,
+    timezone: pick(opt.timezones),
+    locale: pick(opt.locales),
+    hardware_concurrency: pick(opt.cores[platform] || []),
+    device_memory: pick(opt.memory),
+    webrtc_ip: "auto",
+    noise: true,
+    geoip: true,
   };
 }
 
@@ -1587,7 +1729,7 @@ function pollProxyTest(pid, tried, startedAt = 0) {
       if (p) {
         renderProxyRows();
         // check_at 是这次探测之后落的新结果才作数，否则是发起前的旧数据
-        const at = p.check_at ? new Date(String(p.check_at).replace(" ", "T") + "+08:00").getTime() : 0;
+        const at = p.check_at ? new Date(String(p.check_at).replace(" ", "T")).getTime() : 0;
         const fresh = !startedAt || at > startedAt - 2000;
         if (fresh && (p.check_error || "").trim()) {
           toast(`测试失败：${p.check_error}`, true);
@@ -1785,7 +1927,6 @@ $("#login-form").addEventListener("submit", async (e) => {
       body: { username: $("#login-user").value, password: $("#login-pass").value },
     });
     TOKEN = d.token;
-    try { localStorage.setItem("fa_token", TOKEN); } catch (_) {}
     $("#login-pass").value = "";
     showMain();
   } catch (e2) {
@@ -1797,7 +1938,6 @@ $("#login-form").addEventListener("submit", async (e) => {
 $("#logout-btn").addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
   TOKEN = "";
-  try { localStorage.removeItem("fa_token"); } catch (_) {}
   showLogin();
 });
 

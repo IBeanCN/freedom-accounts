@@ -19,19 +19,21 @@ FINGERPRINT_FIELDS = [
 
 _PLATFORMS = ["windows", "macos"]
 _BRANDS = ["Chrome", "Edge", "Opera", "Vivaldi"]
+_BRAND_VERSIONS = list(range(130, 152))
 # GPU 与平台强绑定：Direct3D11 只存在于 Windows，Mac 只有 Apple Metal。
 # 跨平台混搭（如 macos + D3D11）是检测站一眼识别的硬伤。
+# 三元组：(vendor, renderer 完整串, 下拉展示用的短名)
 _GPU_COMBOS = {
     "windows": [
-        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
-        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
-        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Intel UHD 630"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)", "GeForce GTX 1660"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Radeon RX 580"),
     ],
     "macos": [
-        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"),
-        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"),
-        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)"),
-        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Intel(R) Iris(TM) Plus Graphics 645, Unspecified Version)"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", "Apple M1"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", "Apple M2"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", "Apple M3"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Intel(R) Iris(TM) Plus Graphics 645, Unspecified Version)", "Iris Plus 645"),
     ],
 }
 # 屏幕用各平台常见逻辑分辨率：1536x864 是 Windows 125% 缩放产物，Mac 没有
@@ -47,6 +49,26 @@ _TIMEZONES = ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Chicag
               "Europe/London", "Europe/Berlin", "Asia/Singapore", "America/Los_Angeles"]
 _LOCALES = ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"]
 
+# 合法选项池：/api/meta 下发给前端做下拉选择，前端「随机生成」也读这份数据，
+# 保证表单可选项、前端随机、后端 generate_fingerprint 三处永远一致。
+FP_OPTIONS = {
+    "platforms": _PLATFORMS,
+    "brands": _BRANDS,
+    "brand_versions": _BRAND_VERSIONS,
+    "gpus": {
+        p: [{"vendor": v, "renderer": r, "label": lb} for v, r, lb in combos]
+        for p, combos in _GPU_COMBOS.items()
+    },
+    "screens": {
+        p: [{"width": w, "height": h} for w, h in ss]
+        for p, ss in _SCREENS.items()
+    },
+    "cores": _CORES,
+    "memory": [4, 8],   # Chrome deviceMemory 规范上限 8
+    "timezones": _TIMEZONES,
+    "locales": _LOCALES,
+}
+
 
 def generate_fingerprint() -> dict:
     """Random but self-consistent fingerprint config."""
@@ -57,7 +79,7 @@ def generate_fingerprint() -> dict:
         "seed": random.randint(1, 10**9),
         "platform": platform,
         "brand": random.choice(_BRANDS),
-        "brand_version": random.randint(130, 151),
+        "brand_version": random.choice(_BRAND_VERSIONS),
         "gpu_vendor": gpu[0],
         "gpu_renderer": gpu[1],
         "hardware_concurrency": random.choice(_CORES[platform]),

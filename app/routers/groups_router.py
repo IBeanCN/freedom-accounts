@@ -6,11 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..core import config, database, settings
+from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
 from ..automation.flows import validate_login_type, get_adapter
-from ..automation.flows.adapters.cpr import translate_remote_status
+from ..automation.platforms import is_known_group_type
+from ..automation.flows.adapters._util import translate_remote_status
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_admin)])
@@ -65,6 +67,8 @@ def _row_dict(r) -> dict:
     # callback fields are legacy: hidden from the UI, kept for DB compatibility
     d.pop("callback_url", None)
     d.pop("header_json", None)
+    if d.get("upstream_key"):
+        d["upstream_key"] = crypto.decrypt(d["upstream_key"])
     d["fingerprint_template"] = fp_mod.sanitize(d.get("fingerprint_template"))
     return d
 
@@ -106,14 +110,17 @@ async def create_group(body: GroupBody):
     if body.interval_max_ms < body.interval_min_ms:
         raise HTTPException(400, "interval_max_ms must be >= interval_min_ms")
     login_type = _validated_login_type(body.login_type)
+    if not is_known_group_type(body.group_type):
+        raise HTTPException(400, f"unknown group_type: {body.group_type}")
     tpl = fp_mod.as_template(body.fingerprint_template)
+    encrypted_key = crypto.encrypt(body.upstream_key) if body.upstream_key else ""
     db = await database.get_db()
     cur = await db.execute(
         """INSERT INTO groups(group_type,name,login_type,login_url,upstream_key,callback_url,
            header_json,concurrency,interval_min_ms,interval_max_ms,browser_mode,
            proxy_id,fingerprint_template,fp_check_url)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (body.group_type, body.name, login_type, body.login_url, body.upstream_key,
+        (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
          body.proxy_id, json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip()))
@@ -126,18 +133,21 @@ async def update_group(group_id: int, body: GroupBody):
     if body.interval_max_ms < body.interval_min_ms:
         raise HTTPException(400, "interval_max_ms must be >= interval_min_ms")
     login_type = _validated_login_type(body.login_type)
+    if not is_known_group_type(body.group_type):
+        raise HTTPException(400, f"unknown group_type: {body.group_type}")
     db = await database.get_db()
     row = await db.execute("SELECT id FROM groups WHERE id=?", (group_id,))
     if not await row.fetchone():
         raise HTTPException(404, "group not found")
     # a template never pins a seed: sanitized fields only
     tpl = fp_mod.as_template(body.fingerprint_template)
+    encrypted_key = crypto.encrypt(body.upstream_key) if body.upstream_key else ""
     await db.execute(
         """UPDATE groups SET group_type=?,name=?,login_type=?,login_url=?,upstream_key=?,
            callback_url=?,header_json=?,concurrency=?,interval_min_ms=?,interval_max_ms=?,
            browser_mode=?,proxy_id=?,fingerprint_template=?,fp_check_url=?
            WHERE id=?""",
-        (body.group_type, body.name, login_type, body.login_url, body.upstream_key,
+        (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
          body.proxy_id, json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(),
@@ -230,9 +240,12 @@ async def sync_accounts(group_id: int, body: SyncBody):
     if not g:
         raise HTTPException(404, "group not found")
 
+    adapter_group = dict(g)
+    if adapter_group.get("upstream_key"):
+        adapter_group["upstream_key"] = crypto.decrypt(adapter_group["upstream_key"])
     adapter = get_adapter(g["login_type"])()
     try:
-        remote = await adapter.list_accounts(dict(g))
+        remote = await adapter.list_accounts(adapter_group)
     except NotImplementedError:
         raise HTTPException(400, f"登录类型 {g['login_type']} 不支持同步账号")
     except Exception as e:
@@ -249,6 +262,11 @@ async def sync_accounts(group_id: int, body: SyncBody):
         str(it.get("email") or it.get("name") or "").strip().lower()
         for it in remote_items.values()}
     remote_names.discard("")
+    remote_identity_ids: dict[str, set[str]] = {}
+    for rid, item in remote_items.items():
+        identity = str(item.get("email") or item.get("name") or "").strip().lower()
+        if identity:
+            remote_identity_ids.setdefault(identity, set()).add(rid)
 
     rows = await db.execute(
         "SELECT * FROM accounts WHERE group_id=?", (group_id,))
@@ -256,14 +274,11 @@ async def sync_accounts(group_id: int, body: SyncBody):
 
     # local rows indexed by remote_id (synced rows only)
     local_by_rid: dict[str, dict] = {}
-    manual_rows: list[dict] = []                    # no remote_id -> manual, never touched
     for r in local_rows:
         d = dict(r)
         rid = (d.get("remote_id") or "").strip()
         if rid:
             local_by_rid[rid] = d
-        else:
-            manual_rows.append(d)
 
     created = deleted = updated = disabled = ignored = 0
 
@@ -271,23 +286,13 @@ async def sync_accounts(group_id: int, body: SyncBody):
         template = g["fingerprint_template"] if "fingerprint_template" in g.keys() else "{}"
         has_tpl = bool(fp_mod.sanitize(template))
 
-        # 1) synced rows whose remote id vanished upstream -> delete
+    # step 1) synced rows whose remote id vanished upstream -> delete
         for rid, row in local_by_rid.items():
             if rid not in remote_items:
                 await db.execute("DELETE FROM accounts WHERE id=?", (row["id"],))
                 deleted += 1
 
-        # 2) duplicates: a manual row (or another synced row) carrying the same
-        #    account identity as an upstream account must be disabled
-        dup_ids: list[int] = []
-        for row in manual_rows:
-            uname = (row["username"] or "").strip().lower()
-            if uname and uname in remote_names:
-                dup_ids.append(row["id"])
-        # synced rows whose remote id exists upstream are the source of truth;
-        # extra synced rows (not in remote_items) were already deleted above.
-
-        # 3) upsert by remote_id
+        # step 2) upsert by remote_id
         for rid, it in remote_items.items():
             # display name: email first, upstream name second, id last
             display = str(it.get("email") or it.get("name") or rid).strip()
@@ -318,7 +323,20 @@ async def sync_accounts(group_id: int, body: SyncBody):
                      rid, status, up_remark))
                 created += 1
 
-        # 4) disable duplicates (same account name under different ids)
+        # step 3) disable duplicates after final display usernames are known.
+        rows = await db.execute(
+            "SELECT id, username, remote_id, enabled FROM accounts WHERE group_id=?",
+            (group_id,))
+        final_rows = await rows.fetchall()
+        dup_ids: list[int] = []
+        for row in final_rows:
+            identity = (row["username"] or "").strip().lower()
+            remote_ids = remote_identity_ids.get(identity, set())
+            rid = (row["remote_id"] or "").strip()
+            manual_duplicate = not rid and identity in remote_names
+            synced_duplicate = bool(rid) and len(remote_ids) > 1 and rid in remote_ids
+            if (manual_duplicate or synced_duplicate) and row["enabled"]:
+                dup_ids.append(row["id"])
         for aid in dup_ids:
             await db.execute(
                 "UPDATE accounts SET enabled=0 WHERE id=? AND enabled=1", (aid,))
@@ -385,7 +403,7 @@ async def open_browser(group_id: int):
             fp, "headed", _manual_session_key(group_id), proxy_server=proxy_server)
     except Exception as e:
         raise HTTPException(500, f"打开浏览器失败: {str(e)[:120]}")
-    return {**result, "proxy": proxy_server or ""}
+    return {**result, "proxy": browser_mod.mask_proxy_server(proxy_server)}
 
 
 @router.post("/{group_id}/close-browser")

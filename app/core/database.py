@@ -1,5 +1,6 @@
 """SQLite (aiosqlite) access layer and schema."""
 import aiosqlite
+import asyncio
 from . import config
 
 _SCHEMA = """
@@ -107,15 +108,19 @@ async def _migrate_proxies(db: aiosqlite.Connection) -> None:
             await db.executescript(_LEGACY_SCHEMA)
 
 _db: aiosqlite.Connection | None = None
+_db_lock = asyncio.Lock()
 
 
 async def get_db() -> aiosqlite.Connection:
     global _db
-    if _db is None:
-        _db = await aiosqlite.connect(config.DB_PATH)
-        _db.row_factory = aiosqlite.Row
-        await _db.execute("PRAGMA journal_mode=WAL")
-        await _db.execute("PRAGMA foreign_keys=ON")
+    if _db is not None:
+        return _db
+    async with _db_lock:
+        if _db is None:
+            _db = await aiosqlite.connect(config.DB_PATH)
+            _db.row_factory = aiosqlite.Row
+            await _db.execute("PRAGMA journal_mode=WAL")
+            await _db.execute("PRAGMA foreign_keys=ON")
     return _db
 
 
@@ -165,6 +170,42 @@ async def init_db() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='adapter_logs'") as cur:
         if not await cur.fetchone():
             await db.executescript(_SCHEMA[_SCHEMA.index("CREATE TABLE IF NOT EXISTS adapter_logs"):])
+    await db.commit()
+    await _migrate_encrypt_sensitive_fields(db)
+
+
+async def _migrate_encrypt_sensitive_fields(db: aiosqlite.Connection) -> None:
+    """One-time migration: encrypt any plaintext credentials in existing rows."""
+    from . import crypto
+
+    # accounts.password
+    rows = await db.execute(
+        "SELECT id, password FROM accounts WHERE password != '' AND password NOT LIKE 'enc:%'")
+    for row in await rows.fetchall():
+        await db.execute("UPDATE accounts SET password=? WHERE id=?",
+                         (crypto.ensure_encrypted(row["password"]), row["id"]))
+
+    # accounts.totp_secret
+    rows = await db.execute(
+        "SELECT id, totp_secret FROM accounts WHERE totp_secret != '' AND totp_secret NOT LIKE 'enc:%'")
+    for row in await rows.fetchall():
+        await db.execute("UPDATE accounts SET totp_secret=? WHERE id=?",
+                         (crypto.ensure_encrypted(row["totp_secret"]), row["id"]))
+
+    # proxies.server
+    rows = await db.execute(
+        "SELECT id, server FROM proxies WHERE server != '' AND server NOT LIKE 'enc:%'")
+    for row in await rows.fetchall():
+        await db.execute("UPDATE proxies SET server=? WHERE id=?",
+                         (crypto.ensure_encrypted(row["server"]), row["id"]))
+
+    # groups.upstream_key
+    rows = await db.execute(
+        "SELECT id, upstream_key FROM groups WHERE upstream_key != '' AND upstream_key NOT LIKE 'enc:%'")
+    for row in await rows.fetchall():
+        await db.execute("UPDATE groups SET upstream_key=? WHERE id=?",
+                         (crypto.ensure_encrypted(row["upstream_key"]), row["id"]))
+
     await db.commit()
 
 

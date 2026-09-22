@@ -6,6 +6,9 @@ exposed through any HTTP endpoint — they are for internal auditing only and
 are pruned by the retention job (see core/maintenance.py).
 """
 from ....core import database
+import logging
+
+_log = logging.getLogger("adapter.log")
 
 
 async def log_action(group_id: int, login_type: str, action: str,
@@ -19,5 +22,5 @@ async def log_action(group_id: int, login_type: str, action: str,
             (group_id, login_type, action, 1 if ok else 0, str(detail)[:2000]))
         await db.commit()
     except Exception:
-        # logging must never break the operation itself
-        pass
+        # logging must never break the operation itself, but record the failure
+        _log.debug("adapter log write failed (group=%s action=%s)", group_id, action, exc_info=True)

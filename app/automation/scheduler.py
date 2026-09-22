@@ -17,11 +17,17 @@ import time
 from datetime import datetime
 
 from ..core import config, database, settings
+from ..core import crypto
 from . import browser as browser_mod
 from . import flows
+from .flows.adapters._openai_browser import redact_callback_url
 
 _groups: dict[int, dict] = {}   # group_id -> {"queue": Queue, "dispatcher": Task, "sem": Semaphore}
 _lock = asyncio.Lock()
+_account_slots: set[int] = set()
+_running_accounts: set[int] = set()
+_account_state_lock = asyncio.Lock()
+_RUN_TASKS: set[asyncio.Task] = set()
 
 
 def _now() -> str:
@@ -29,16 +35,21 @@ def _now() -> str:
 
 
 async def enqueue(group_id: int, account_ids: list[int]) -> int:
-    """Queue accounts of one group; spawns the group dispatcher if needed."""
+    """Queue each account once; queued/running accounts cannot be duplicated."""
     async with _lock:
         g = _groups.get(group_id)
         if g is None:
             g = {"queue": asyncio.Queue(), "sem": None}
             _groups[group_id] = g
             g["dispatcher"] = asyncio.create_task(_dispatcher(group_id, g))
+        queued: list[int] = []
         for aid in account_ids:
+            if aid in _account_slots:
+                continue
+            _account_slots.add(aid)
+            queued.append(aid)
             await g["queue"].put(aid)
-        return len(account_ids)
+        return len(queued)
 
 
 async def _dispatcher(group_id: int, g: dict) -> None:
@@ -51,37 +62,66 @@ async def _dispatcher(group_id: int, g: dict) -> None:
             (group_id,))
         gr = await row.fetchone()
         if gr is None:          # group deleted
+            async with _account_state_lock:
+                _account_slots.discard(account_id)
+            # drain remaining queued accounts and release their slots
+            while not g["queue"].empty():
+                try:
+                    remaining = g["queue"].get_nowait()
+                    async with _account_state_lock:
+                        _account_slots.discard(remaining)
+                except asyncio.QueueEmpty:
+                    break
             break
         conc = max(1, min(int(gr["concurrency"] or 1), config.MAX_CONCURRENCY_PER_GROUP))
-        if g["sem"] is None or g["sem"]._value != conc:  # config changed
+        if g["sem"] is None or g.get("sem_concurrency") != conc:
             g["sem"] = asyncio.Semaphore(conc)
+            g["sem_concurrency"] = conc
         sem = g["sem"]
 
         lo = max(int(gr["interval_min_ms"] or 0), config.INTERVAL_MIN_MS) / 1000.0
         hi = max(int(gr["interval_max_ms"] or 0), lo) / 1000.0
-        # interval applies between dispatches; wait before every dispatch except
-        # when nothing else was dispatched recently (queue idle -> start fast)
-        if not g["queue"].empty() or getattr(g, "_last_dispatch", None):
-            pass
         if g.get("last_dispatch") is not None:
             await asyncio.sleep(random.uniform(lo, hi))
         g["last_dispatch"] = time.monotonic()
 
-        asyncio.create_task(_run_one(group_id, account_id, sem))
+        task = asyncio.create_task(_run_one(group_id, account_id, sem))
+        _RUN_TASKS.add(task)
+        task.add_done_callback(_RUN_TASKS.discard)
 
 
 async def _run_one(group_id: int, account_id: int, sem: asyncio.Semaphore) -> None:
-    db = await database.get_db()
-    g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
-    a = await (await db.execute("SELECT * FROM accounts WHERE id=?", (account_id,))).fetchone()
-    if not g or not a:
-        return
+    async with _account_state_lock:
+        _account_slots.discard(account_id)
+        if account_id in _running_accounts:
+            return
+        _running_accounts.add(account_id)
+    try:
+        db = await database.get_db()
+        g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
+        a = await (await db.execute("SELECT * FROM accounts WHERE id=?", (account_id,))).fetchone()
+        if not g or not a:
+            return
 
-    async with sem:
-        await _execute(db, g, a)
+        # decrypt sensitive credentials for the flow (they are encrypted at rest)
+        password = crypto.decrypt(a["password"]) if a["password"] else ""
+        totp_secret = crypto.decrypt(a["totp_secret"]) if a["totp_secret"] else ""
+
+        # decrypt the group's upstream key for adapters
+        group_row = dict(g)
+        if group_row.get("upstream_key"):
+            group_row["upstream_key"] = crypto.decrypt(group_row["upstream_key"])
+
+        async with sem:
+            await _execute(db, g, a, password=password, totp_secret=totp_secret,
+                           group_decrypted=group_row)
+    finally:
+        async with _account_state_lock:
+            _running_accounts.discard(account_id)
 
 
-async def _execute(db, g, a) -> None:
+async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
+                   group_decrypted: dict | None = None) -> None:
     group_id, account_id = g["id"], a["id"]
     cur = await db.execute(
         "INSERT INTO tasks(group_id,account_id,status,created_at) VALUES(?,?, 'running', ?)",
@@ -109,21 +149,39 @@ async def _execute(db, g, a) -> None:
             a["proxy_id"] if "proxy_id" in a.keys() else None,
             g["proxy_id"] if "proxy_id" in g.keys() else None)
         if proxy_server:
-            steps.append({"t": _now(), "step": "proxy", "detail": proxy_server, "ok": True})
-        closer, ctx, engine_used, fp_json = await browser_mod.launch_for_account(
-            fp, mode, profile_key=f"g{group_id}_a{account_id}",
-            proxy_server=proxy_server)
+            steps.append({
+                "t": _now(), "step": "proxy",
+                "detail": browser_mod.mask_proxy_server(proxy_server), "ok": True,
+            })
+        try:
+            closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
+                fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                proxy_server=proxy_server)
+        except browser_mod.SessionLimitError as e:
+            # 撞套餐会话上限（通常是手动"打开浏览器"窗口占座）：自动关掉
+            # 手动窗口并重试一次；仍失败才落为任务失败。
+            steps.append({"t": _now(), "step": "session_limit",
+                          "detail": "自动关闭已打开的指纹浏览器窗口后重试", "ok": True})
+            await browser_mod.reclaim_manual_sessions()
+            closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
+                fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                proxy_server=proxy_server)
         steps.append({"t": _now(), "step": "browser_launched", "detail": engine_used, "ok": True})
 
         try:
-            result = await flows.run_flow(g["login_type"], ctx, a["username"], a["password"],
-                                          a["totp_secret"], g["login_url"], steps)
+            result = await flows.run_flow(g["login_type"], ctx, a["username"], password,
+                                          totp_secret, g["login_url"], steps,
+                                          group=group_decrypted or dict(g), account=dict(a))
         finally:
             try:
                 await closer()
             finally:
                 steps.append({"t": _now(), "step": "browser_closed", "detail": "-", "ok": True})
         result_json = result
+        if isinstance(result_json, dict):
+            for key in ("callback_url", "url"):
+                if isinstance(result_json.get(key), str):
+                    result_json[key] = redact_callback_url(result_json[key])
         status = "success"
     except Exception as e:
         error = str(e)
@@ -152,3 +210,16 @@ async def _execute(db, g, a) -> None:
     await db.execute("UPDATE accounts SET last_status=?, last_message=? WHERE id=?",
                      (status, str(msg)[:300], account_id))
     await db.commit()
+
+
+async def shutdown() -> None:
+    """Stop dispatch/workers before lifespan closes the SQLite connection."""
+    async with _lock:
+        dispatchers = [state["dispatcher"] for state in _groups.values()]
+        _groups.clear()
+    for task in dispatchers:
+        task.cancel()
+    for task in list(_RUN_TASKS):
+        task.cancel()
+    if dispatchers or _RUN_TASKS:
+        await asyncio.gather(*dispatchers, *_RUN_TASKS, return_exceptions=True)

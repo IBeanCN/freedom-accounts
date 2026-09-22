@@ -1,7 +1,7 @@
 """CPR (codex-proxy-rs) flow adapter.
 
-登录流程：站点登录 + 业务占位（沿用原骨架）。
-凭证操作：对接 codex-proxy-rs 管理面 HTTP API（backend/crates/gateway-api）。
+上号 flow = 纯编排（auth_link → 共享浏览器授权段 → redeem_token），
+浏览器操作零上游耦合；上游差异集中在凭证操作（管理面 HTTP API）。
 
 Upstream wire contract (verified against the codex-proxy-rs source):
   - base URL        = groups.login_url（例: https://cpr.example.com）
@@ -24,34 +24,17 @@ import httpx
 
 from ....core import config
 from ....core import database  # noqa: F401  (kept for parity with other adapters)
-from ._util import now, totp_code
+from ._util import now, translate_remote_status
 from ._log import log_action
+from ._openai_browser import run_browser_auth, is_localhost
 from .base import FlowAdapter
-from .password import run_login_async, run_login_sync
 
 PROVIDER = "openai"          # CPR 管理面的 provider 维度，当前仅 openai
 SESSION_COOKIE = "cpr_session"
-HTTP_TIMEOUT = config.CALLBACK_TIMEOUT_SECONDS
+HTTP_TIMEOUT = max(30.0, float(config.CALLBACK_TIMEOUT_SECONDS))
+LIST_PAGE_SIZE = 50
 
 # 上游账号状态 -> 中文（适配器层负责转换，接口/页面直接使用返回值）
-REMOTE_STATUS_MAP = {
-    "normal": "正常",
-    "quota_exhausted": "配额耗尽",
-    "rate_limited": "限流中",
-    "disabled": "已停用",
-    "error": "错误",
-    "refresh_backoff": "退避中",
-}
-
-
-def translate_remote_status(raw) -> str:
-    """上游状态枚举转中文；未知值原样返回，空值返回空串。"""
-    s = str(raw or "").strip()
-    if not s:
-        return ""
-    return REMOTE_STATUS_MAP.get(s, s)
-
-
 # ---------------- wire helpers ----------------
 def _base_url(group: dict) -> str:
     return (group["login_url"] or "").strip().rstrip("/")
@@ -109,35 +92,75 @@ async def _api_call(group: dict, method: str, path: str,
         return _unwrap(resp.json())
 
 
-# ---------------- sync flavor ----------------
+def _items(data: dict) -> list:
+    items = data.get("items")
+    return items if isinstance(items, list) else []
+
+
+def _item_id(item: dict):
+    return item.get("id") if item.get("id") is not None else item.get("account_id")
+
+
+async def _list_items(group: dict) -> list:
+    """Fetch all account pages; a partial read would make sync delete rows."""
+    items: list = []
+    seen: set[str] = set()
+    max_pages = 100
+    for page in range(1, max_pages + 1):
+        data = await _api_call(
+            group, "GET", "/api/admin/accounts",
+            params={"page": page, "pageSize": LIST_PAGE_SIZE})
+        page_items = _items(data)
+        for item in page_items:
+            item_id = str(_item_id(item))
+            if item_id not in seen:
+                seen.add(item_id)
+                items.append(item)
+        if len(page_items) < LIST_PAGE_SIZE:
+            return items
+    raise RuntimeError(f"CPR: 上游账号分页超过 {max_pages} 页，已停止同步以避免误删")
+
+
+# ---------------- sync flavor (unsupported) ----------------
 def run_cpr_sync(ctx, username: str, password: str, totp_secret: str,
-                 login_url: str, steps: list) -> dict:
-    result = run_login_sync(ctx, username, password, totp_secret, login_url, steps)
-
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    steps.append({"t": now(), "step": "cpr_enter", "detail": page.url, "ok": True})
-    # TODO(CPR): 按真实站点实现业务流程（页面导航/表单/结果提取）
-    result["cpr"] = {"entered": True, "note": "business flow placeholder"}
-    return result
+                 login_url: str, steps: list, group: dict | None = None,
+                 account: dict | None = None) -> dict:
+    steps.append({"t": now(), "step": "cpr_unsupported",
+                  "detail": "OAuth 授权流程仅支持异步引擎", "ok": False})
+    raise RuntimeError("CPR（OpenAI 授权上号）仅支持异步引擎（scheduler 当前均为 async）")
 
 
-# ---------------- async flavor ----------------
+# ---------------- async flavor: 编排（共享浏览器段） ----------------
 async def run_cpr_async(ctx, username: str, password: str, totp_secret: str,
-                        login_url: str, steps: list) -> dict:
-    result = await run_login_async(ctx, username, password, totp_secret, login_url, steps)
+                        login_url: str, steps: list,
+                        group: dict | None = None,
+                        account: dict | None = None) -> dict:
+    """编排: auth_link（oauth/start） → 浏览器授权（共享段） → redeem_token（oauth/complete）."""
+    group = dict(group or {})
+    remote_id = str((account or {}).get("remote_id") or "").strip() or None
 
-    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-    steps.append({"t": now(), "step": "cpr_enter", "detail": page.url, "ok": True})
-    # TODO(CPR): 按真实站点实现
-    result["cpr"] = {"entered": True, "note": "business flow placeholder"}
-    return result
+    # 1) 上游段: 拿授权链接（CPR 管理 API oauth/start）
+    link = await CprAdapter().auth_link(group, name=username, remote_account_id=remote_id)
+    steps.append({"t": now(), "step": "auth_url",
+                  "detail": str(link.get("url") or "")[:300], "ok": True})
+
+    # 2) 通用浏览器授权段（全适配器共享，与上游无关）
+    auth = await run_browser_auth(ctx, link["url"], username, password,
+                                  totp_secret, steps)
+
+    # 3) 上游段: 兑换凭证（oauth/complete，exchange 成功即授权完成）
+    await CprAdapter().redeem_token(group, link["flow_id"], auth["callback_url"])
+
+    return {"authorized": True, "upstream_email": username,
+            "flow_id": link["flow_id"],
+            "callback_url": auth["callback_url"], "url": auth["callback_url"]}
 
 
 # ---------------- adapter ----------------
 class CprAdapter(FlowAdapter):
     key = "cpr"
     label = "CPR（codex-proxy-rs）"
-    description = "登录 CPR 站点；凭证操作对接 codex-proxy-rs 管理 API（仅记日志）"
+    description = "指纹浏览器完成 OpenAI OAuth 授权；凭证操作对接 codex-proxy-rs 管理 API（仅记日志）"
     run_sync = staticmethod(run_cpr_sync)
     run_async = staticmethod(run_cpr_async)
 
@@ -145,11 +168,9 @@ class CprAdapter(FlowAdapter):
 
     async def list_accounts(self, group: dict) -> dict:
         try:
-            data = await _api_call(group, "GET", "/api/admin/accounts",
-                                   params={"page": 1, "pageSize": 50})
-            items = data.get("items") or []
+            items = await _list_items(group)
             summary = {
-                "total": (data.get("page") or {}).get("total", len(items)),
+                "total": len(items),
                 "accounts": [
                     {"id": it.get("id"),
                      "name": it.get("name"),
@@ -210,7 +231,9 @@ class CprAdapter(FlowAdapter):
             await log_action(group["id"], self.key, "auth_link", False, str(e))
             raise
 
-    async def redeem_token(self, group: dict, flow_id: str, callback_url: str) -> dict:
+    async def redeem_token(self, group: dict, flow_id: str, callback_url: str,
+                           remote_account_id: str | None = None) -> dict:
+        """flow_id = oauth/start 的 flowId；callback_url = 浏览器段的 localhost 回调地址。"""
         try:
             data = await _api_call(group, "POST", "/api/admin/accounts/oauth/complete",
                                    json_body={"provider": PROVIDER,

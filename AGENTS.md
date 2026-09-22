@@ -115,6 +115,18 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 - 适配器可选实现 5 个凭证操作：`list_accounts` / `get_account` / `auth_link` / `redeem_token` / `refresh_token`（见 `flows/adapters/base.py`）。每次调用**只写 `adapter_logs` 表**，无任何对外 HTTP 端点。
 - `groups.callback_url` / `header_json` 为遗留列：数据库保留、接口不再接受、列表不再返回。
 
+### OpenAI 授权上号（sub2api / cpr 通用架构，2026-09-22）
+
+复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，上号时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
+
+- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等）→ 持续点 Continue → 轮询等 localhost 回调（300s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。
+- **上游差异只在凭证操作**：
+  - sub2api：`POST {login_url}/api/v1/openai/generate-auth-url {account_id}` → `{session_id, auth_url}`；`POST /openai/exchange-code {code, state, session_id}`（重试 5 次）；成功后 best-effort `recover-state` + `schedulable`。Header `x-api-key`；响应 envelope 宽容解析；账号按 email 匹配、`accounts.remote_id` 优先；`refresh_token` 未实现（上游无端点）。
+  - cpr：`POST /api/admin/accounts/oauth/start` → `{flowId, authorizationUrl}`；`POST /api/admin/accounts/oauth/complete {flowId, callbackUrl}`；见文件头 wire contract。
+- **flow 签名扩展**：`run_flow(..., group=..., account=...)` 把分组/账号行透传给 flow（registry.py，`TypeError` 兜底老 6 参签名）。scheduler 是唯一调用方。
+- `upstream_key`（上游 API Key）必填，缺失时任务/同步均报错提示。sub2api 的 `login_url` 填站点根（自动补 `/api/v1/admin` 前缀，已带则原样）。
+
 ---
 
 ## 4. 新增一个页面 / 区块

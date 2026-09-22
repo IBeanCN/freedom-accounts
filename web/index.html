@@ -44,7 +44,7 @@
       <p id="login-err" class="form-error hidden"></p>
       <button class="btn btn-primary btn-block" type="submit">登 录</button>
     </form>
-    <p class="auth-hint">默认账号 admin / admin123，首次登录后请立即在系统设置中修改。</p>
+    <p class="auth-hint">首次登录请使用管理员账号，密码可在系统设置中修改。</p>
   </div>
 </div>
 
@@ -406,7 +406,7 @@
             <div class="setting-card">
               <div class="setting-head">
                 <h3 class="setting-title">管理员密码</h3>
-                <p class="setting-desc">默认账号 admin / admin123，首次登录后请立即修改。</p>
+                <p class="setting-desc">修改后旧密码立即失效，其他已登录会话需重新登录。</p>
               </div>
               <div class="setting-body">
                 <div class="field-row">
@@ -544,37 +544,46 @@
           </label>
           <label class="field">
             <span class="field-label">时区</span>
-            <input id="gt-tz" class="input" placeholder="Asia/Shanghai">
+            <select id="gt-tz" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
         </div>
         <div class="field-row">
           <label class="field">
-            <span class="field-label">屏幕宽</span>
-            <input id="gt-w" class="input" type="number">
-          </label>
-          <label class="field">
-            <span class="field-label">屏幕高</span>
-            <input id="gt-h" class="input" type="number">
+            <span class="field-label">屏幕分辨率</span>
+            <select id="gt-screen" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
           <label class="field">
             <span class="field-label">语言</span>
-            <input id="gt-locale" class="input" placeholder="zh-CN">
+            <select id="gt-locale" class="select">
+              <option value="">默认</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">CPU 核心</span>
+            <select id="gt-cores" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
         </div>
         <div class="field-row">
           <label class="field">
-            <span class="field-label">CPU 核心</span>
-            <input id="gt-cores" class="input" type="number">
+            <span class="field-label">内存 (GB)</span>
+            <select id="gt-mem" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
           <label class="field">
-            <span class="field-label">内存 (GB)</span>
-            <input id="gt-mem" class="input" type="number">
+            <span class="field-label">GPU 机型</span>
+            <select id="gt-gpu" class="select">
+              <option value="">默认（自动推断）</option>
+            </select>
+            <span class="field-hint">厂商随 GPU 机型自动写入</span>
           </label>
         </div>
-        <label class="field">
-          <span class="field-label">WebGL 渲染器</span>
-          <input id="gt-gpu_renderer" class="input" placeholder="ANGLE (Intel, Intel(R) UHD Graphics 630 …)，厂商留空自动推断">
-        </label>
       </fieldset>
     </div>
     <div class="dlg-foot">
@@ -668,40 +677,43 @@
         </div>
         <div class="field-row">
           <label class="field">
-            <span class="field-label">屏幕宽</span>
-            <input id="fp-w" class="input" type="number">
-          </label>
-          <label class="field">
-            <span class="field-label">屏幕高</span>
-            <input id="fp-h" class="input" type="number">
+            <span class="field-label">屏幕分辨率</span>
+            <select id="fp-screen" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
           <label class="field">
             <span class="field-label">时区</span>
-            <input id="fp-tz" class="input" placeholder="Asia/Shanghai">
+            <select id="fp-tz" class="select">
+              <option value="">默认</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">语言</span>
+            <select id="fp-locale" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
         </div>
         <div class="field-row">
           <label class="field">
-            <span class="field-label">语言</span>
-            <input id="fp-locale" class="input" placeholder="zh-CN">
-          </label>
-          <label class="field">
             <span class="field-label">CPU 核心</span>
-            <input id="fp-cores" class="input" type="number">
+            <select id="fp-cores" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
           <label class="field">
             <span class="field-label">内存 (GB)</span>
-            <input id="fp-mem" class="input" type="number">
-          </label>
-        </div>
-        <div class="field-row">
-          <label class="field">
-            <span class="field-label">WebGL 厂商</span>
-            <input id="fp-gpu_vendor" class="input">
+            <select id="fp-mem" class="select">
+              <option value="">默认</option>
+            </select>
           </label>
           <label class="field">
-            <span class="field-label">WebGL 渲染器</span>
-            <input id="fp-gpu_renderer" class="input">
+            <span class="field-label">GPU 机型</span>
+            <select id="fp-gpu" class="select">
+              <option value="">默认（自动推断）</option>
+            </select>
+            <span class="field-hint">厂商随 GPU 机型自动写入</span>
           </label>
         </div>
       </fieldset>

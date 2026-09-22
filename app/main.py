@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .core import database, settings, maintenance
+from .core import database, settings, maintenance, tasks
+from .automation import browser, scheduler
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -24,6 +25,9 @@ async def lifespan(app: FastAPI):
     pruner = maintenance.start_pruner()     # hourly sweep
     yield
     pruner.cancel()
+    await tasks.cancel_all()
+    await scheduler.shutdown()
+    await browser.close_all_managed_sessions()
     await database.close_db()
 
 

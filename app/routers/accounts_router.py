@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..core import database
+from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
-from ..automation.flows.adapters.cpr import translate_remote_status
+from ..automation.flows.adapters._util import translate_remote_status
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_admin)])
@@ -84,11 +85,13 @@ async def create_account(body: AccountBody):
         row = await db.execute("SELECT id FROM proxies WHERE id=?", (proxy_id,))
         if not await row.fetchone():
             raise HTTPException(404, "proxy not found")
+    encrypted_password = crypto.encrypt(body.password)
+    encrypted_totp = crypto.encrypt(body.totp_secret.strip()) if body.totp_secret.strip() else ""
     cur = await db.execute(
         """INSERT INTO accounts(group_id,username,password,totp_secret,browser_mode,
            fingerprint,enabled,remark,proxy_id)
            VALUES(?,?,?,?,?,?,?,?,?)""",
-        (body.group_id, body.username, body.password, body.totp_secret.strip(),
+        (body.group_id, body.username, encrypted_password, encrypted_totp,
          body.browser_mode, json.dumps(fp, ensure_ascii=False),
          int(body.enabled), body.remark, proxy_id))
     await db.commit()
@@ -102,10 +105,22 @@ async def update_account(account_id: int, body: AccountBody):
     old = await row.fetchone()
     if not old:
         raise HTTPException(404, "account not found")
+    group = await db.execute("SELECT id FROM groups WHERE id=?", (body.group_id,))
+    if not await group.fetchone():
+        raise HTTPException(404, "group not found")
     fp = fp_mod.sanitize(body.fingerprint) if body.fingerprint else fp_mod.sanitize(old["fingerprint"])
-    totp = body.totp_secret.strip() or old["totp_secret"]
-    # keep-old sentinel sent by the frontend when the password field stays blank
-    password = old["password"] if body.password == "__KEEP_OLD__" else body.password
+    # totp: __CLEAR__ wipes; new non-empty value encrypts; empty keeps existing (already encrypted)
+    if body.totp_secret == "__CLEAR__":
+        totp = ""
+    elif body.totp_secret.strip():
+        totp = crypto.encrypt(body.totp_secret.strip())
+    else:
+        totp = old["totp_secret"]  # already encrypted in DB
+    # keep-old sentinel: reuse the stored (encrypted) value; new value is encrypted before write
+    if body.password == "__KEEP_OLD__":
+        password = old["password"]  # already encrypted in DB
+    else:
+        password = crypto.encrypt(body.password)
     proxy_id = body.proxy_id or None
     if proxy_id and proxy_id != old["proxy_id"]:
         row = await db.execute("SELECT id FROM proxies WHERE id=?", (proxy_id,))
@@ -140,6 +155,12 @@ async def set_account_enabled(account_id: int, body: EnabledBody):
 @router.delete("/{account_id}")
 async def delete_account(account_id: int):
     db = await database.get_db()
+    row = await db.execute("SELECT last_status FROM accounts WHERE id=?", (account_id,))
+    account = await row.fetchone()
+    if not account:
+        raise HTTPException(404, "account not found")
+    if account["last_status"] == "running":
+        raise HTTPException(409, "账号正在运行，不能删除")
     await db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
     await db.commit()
     return {"ok": True}
