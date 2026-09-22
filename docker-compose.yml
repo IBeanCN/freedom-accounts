@@ -5,25 +5,66 @@ services:
       - "${FA_PORT:-8000}:8000"
     environment:
       FA_ENCRYPTION_KEY: ${FA_ENCRYPTION_KEY:?FA_ENCRYPTION_KEY is required}
+      FA_ADMIN_USER: ${FA_ADMIN_USER:-admin}
+      FA_JWT_EXPIRE_HOURS: ${FA_JWT_EXPIRE_HOURS:-24}
+      FA_CALLBACK_TIMEOUT: ${FA_CALLBACK_TIMEOUT:-15}
+      FA_MAX_CONCURRENCY: ${FA_MAX_CONCURRENCY:-5}
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
-      FA_CDP_URL: http://browser:3000
+      FA_CDP_URL: http://browser:${CLOAKSERVE_PORT:-9222}
       FA_HOST: "0.0.0.0"
       FA_JWT_SECRET: ${FA_JWT_SECRET:?FA_JWT_SECRET is required for non-local bind}
       FA_ADMIN_PASSWORD: ${FA_ADMIN_PASSWORD:?FA_ADMIN_PASSWORD is required for non-local bind}
     volumes:
       - app-data:/app/data
     depends_on:
-      - browser
+      browser:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   browser:
-    image: browserless/chromium:latest
+    image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser:0.5.10}
     environment:
-      CONNECTION_TIMEOUT: "300000"
-    # 指纹浏览器容器。默认 browserless/chromium 提供 CDP 连接（基础指纹通过
-    # context_kwargs 下发）。如需 cloakserve 级别的 seed/timezone/proxy 参数
-    # 透传，将 image 换为 cloakserve 镜像即可，其余配置不变。
+      CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
+      CLOAKBROWSER_CACHE_DIR: /root/.cloakbrowser
+      CLOAKBROWSER_AUTO_UPDATE: ${CLOAKBROWSER_AUTO_UPDATE:-true}
+      CLOAKBROWSER_RELEASE_CHANNEL: ${CLOAKBROWSER_RELEASE_CHANNEL:-stable}
+      CLOAKBROWSER_VERSION: ${CLOAKBROWSER_VERSION:-}
+      CLOAKBROWSER_DOWNLOAD_URL: ${CLOAKBROWSER_DOWNLOAD_URL:-https://cloakbrowser.dev}
+      CLOAKBROWSER_SKIP_CHECKSUM: ${CLOAKBROWSER_SKIP_CHECKSUM:-false}
+      CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS: ${CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS:-5}
+      CLOAKBROWSER_WIDEVINE: ${CLOAKBROWSER_WIDEVINE:-1}
+      CLOAKBROWSER_FETCH_WIDEVINE: ${CLOAKBROWSER_FETCH_WIDEVINE:-0}
+      CLOAKBROWSER_WIDEVINE_CDM: ${CLOAKBROWSER_WIDEVINE_CDM:-}
+      CLOAKSERVE_PORT: ${CLOAKSERVE_PORT:-9222}
+      CLOAKSERVE_IDLE_TIMEOUT: ${CLOAKSERVE_IDLE_TIMEOUT:-0}
+      CLOAKSERVE_EXTRA_ARGS: ${CLOAKSERVE_EXTRA_ARGS:-}
+    # cloakserve defaults to headless; --headless=false renders through Xvfb.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec cloakserve --port="$${CLOAKSERVE_PORT:-9222}"
+        --data-dir=/data/cloakserve
+        --idle-timeout="$${CLOAKSERVE_IDLE_TIMEOUT:-0}"
+        $${CLOAKSERVE_EXTRA_ARGS:-}
+    volumes:
+      - cloakbrowser-cache:/root/.cloakbrowser
+      - cloakbrowser-data:/data/cloakserve
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:$${CLOAKSERVE_PORT:-9222}/\" >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
   app-data:
+  cloakbrowser-cache:
+  cloakbrowser-data:
