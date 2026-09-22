@@ -1,0 +1,137 @@
+"""fingerprint config: CloakBrowser-compatible schema + seed generation.
+
+Fingerprint JSON fields (all optional, all applied via --fingerprint-* flags
+when the cloakbrowser engine is available):
+  seed, platform, brand, brand_version, gpu_vendor, gpu_renderer,
+  hardware_concurrency, device_memory, screen_width, screen_height,
+  timezone, locale, webrtc_ip, storage_quota_mb, noise (bool),
+  user_agent, viewport_w, viewport_h, geoip (bool)
+"""
+import json
+import random
+
+FINGERPRINT_FIELDS = [
+    "seed", "platform", "brand", "brand_version", "gpu_vendor", "gpu_renderer",
+    "hardware_concurrency", "device_memory", "screen_width", "screen_height",
+    "timezone", "locale", "webrtc_ip", "storage_quota_mb", "noise",
+    "user_agent", "viewport_w", "viewport_h", "geoip",
+]
+
+_PLATFORMS = ["windows", "macos"]
+_BRANDS = ["Chrome", "Edge", "Opera", "Vivaldi"]
+_GPU_COMBOS = [
+    ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+]
+_TIMEZONES = ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Chicago",
+              "Europe/London", "Europe/Berlin", "Asia/Singapore", "America/Los_Angeles"]
+_LOCALES = ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"]
+
+
+def generate_fingerprint() -> dict:
+    """Random but self-consistent fingerprint config."""
+    platform = random.choice(_PLATFORMS)
+    gpu = random.choice(_GPU_COMBOS)
+    width = random.choice([1280, 1366, 1440, 1536, 1600, 1920])
+    height = {1280: 720, 1366: 768, 1440: 900, 1536: 864, 1600: 900, 1920: 1080}[width]
+    fp = {
+        "seed": random.randint(1, 10**9),
+        "platform": platform,
+        "brand": random.choice(_BRANDS),
+        "brand_version": random.randint(130, 151),
+        "gpu_vendor": gpu[0],
+        "gpu_renderer": gpu[1],
+        "hardware_concurrency": random.choice([4, 6, 8, 12, 16]),
+        "device_memory": random.choice([4, 8, 16]),
+        "screen_width": width,
+        "screen_height": height,
+        "timezone": random.choice(_TIMEZONES),
+        "locale": random.choice(_LOCALES),
+        "webrtc_ip": "auto",
+        "noise": True,
+        "geoip": True,
+    }
+    return fp
+
+
+def generate_from_template(template: dict | str | None) -> dict:
+    """Build an account fingerprint from a group-level template.
+
+    Company machines are bought/installed in batches, so accounts in one group
+    usually share the same platform/screen/GPU/timezone; only the seed (and any
+    fields the template omits) must vary per account. The template never
+    carries a seed — one is always randomized here.
+    """
+    base = {k: v for k, v in sanitize(template).items() if k != "seed"}
+    base["seed"] = random.randint(1, 10**9)
+    return base
+
+
+def as_template(raw: dict | str | None) -> dict:
+    """Normalize a user-supplied template for storage: known fields only, no seed."""
+    tpl = sanitize(raw)
+    tpl.pop("seed", None)
+    return tpl
+
+
+def sanitize(fp: dict | str | None) -> dict:
+    """Keep only known fields; accept JSON string input."""
+    if fp is None or fp == "":
+        return {}
+    if isinstance(fp, str):
+        try:
+            fp = json.loads(fp)
+        except Exception:
+            return {}
+    if not isinstance(fp, dict):
+        return {}
+    return {k: fp[k] for k in FINGERPRINT_FIELDS if k in fp and fp[k] not in (None, "")}
+
+
+def cloak_args(fp: dict) -> list[str]:
+    """Map fingerprint dict to CloakBrowser --fingerprint-* command line flags."""
+    args: list[str] = []
+    if not fp:
+        return args
+    m = {
+        "seed": "--fingerprint-seed",
+        "platform": "--fingerprint-platform",
+        "brand": "--fingerprint-brand",
+        "brand_version": "--fingerprint-brand-version",
+        "gpu_vendor": "--fingerprint-gpu-vendor",
+        "gpu_renderer": "--fingerprint-gpu-renderer",
+        "hardware_concurrency": "--fingerprint-hardware-concurrency",
+        "device_memory": "--fingerprint-device-memory",
+        "screen_width": "--fingerprint-screen-width",
+        "screen_height": "--fingerprint-screen-height",
+        "timezone": "--fingerprint-timezone",
+        "locale": "--fingerprint-locale",
+        "webrtc_ip": "--fingerprint-webrtc-ip",
+        "storage_quota_mb": "--fingerprint-storage-quota",
+    }
+    for key, flag in m.items():
+        v = fp.get(key)
+        if v not in (None, ""):
+            # single token "flag=value": Playwright rejects bare values as pages
+            args.append(f"{flag}={v}")
+    if fp.get("noise") is False:
+        args.append("--fingerprint-noise=false")
+    return args
+
+
+def context_kwargs(fp: dict) -> dict:
+    """Playwright browser-context level settings from the fingerprint dict."""
+    kw: dict = {}
+    if fp.get("user_agent"):
+        kw["user_agent"] = fp["user_agent"]
+    if fp.get("locale"):
+        kw["locale"] = fp["locale"]
+    if fp.get("timezone"):
+        kw["timezone_id"] = fp["timezone"]
+    vw, vh = fp.get("viewport_w"), fp.get("viewport_h")
+    if not (vw and vh) and fp.get("screen_width") and fp.get("screen_height"):
+        vw, vh = fp.get("screen_width"), fp.get("screen_height")
+    if vw and vh:
+        kw["viewport"] = {"width": int(vw), "height": int(vh)}
+    return kw

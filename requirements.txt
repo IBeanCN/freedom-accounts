@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+aiosqlite>=0.19
+playwright>=1.44
+httpx[socks]>=0.27
+pyjwt>=2.8
+argon2-cffi>=23.1
+pyotp>=2.9
+cloakbrowser>=0.5.10
