@@ -149,6 +149,7 @@ class RegenFpBody(BaseModel):
       - "random": fully random per account (legacy behavior)
     """
     mode: str = Field(default="seed_only", pattern="^(seed_only|from_template|random)$")
+    account_ids: Optional[list[int]] = None   # None/empty => all accounts in group
 
 
 def _manual_session_key(group_id: int) -> str:
@@ -255,7 +256,14 @@ async def regenerate_fingerprints(group_id: int, body: RegenFpBody):
     g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
     if not g:
         raise HTTPException(404, "group not found")
-    rows = await db.execute("SELECT id, fingerprint FROM accounts WHERE group_id=?", (group_id,))
+    selected_ids = list(dict.fromkeys(body.account_ids or []))
+    params: list = [group_id]
+    where = "WHERE group_id=?"
+    if selected_ids:
+        where += f" AND id IN ({','.join('?' * len(selected_ids))})"
+        params.extend(selected_ids)
+    rows = await db.execute(
+        f"SELECT id, fingerprint FROM accounts {where}", tuple(params))
     accounts = await rows.fetchall()
     if not accounts:
         raise HTTPException(400, "no accounts in group")
@@ -323,11 +331,16 @@ async def start_group(group_id: int, body: StartBody):
         raise HTTPException(502, f"同步上游账号失败: {e}")
 
     # step 2) filter: only enabled accounts with remote_status='error'
+    selected_ids = list(dict.fromkeys(body.account_ids or []))
+    params: list = [group_id]
+    where = "WHERE group_id=? AND enabled=1 AND remote_status='error'"
+    if selected_ids:
+        where += f" AND id IN ({','.join('?' * len(selected_ids))})"
+        params.extend(selected_ids)
     rows = await db.execute(
-        """SELECT id, username, remote_status, password, totp_secret FROM accounts
-           WHERE group_id=? AND enabled=1 AND remote_status='error'
-           ORDER BY id""",
-        (group_id,))
+        f"""SELECT id, username, remote_status, password, totp_secret FROM accounts
+           {where} ORDER BY id""",
+        tuple(params))
     error_accounts = await rows.fetchall()
 
     if error_accounts and requires_openai_credentials(g["login_type"]):
@@ -349,6 +362,7 @@ async def start_group(group_id: int, body: StartBody):
     error_ids = [r["id"] for r in error_accounts]
     n = await scheduler.enqueue(group_id, error_ids)
     return {"ok": True, "queued": n, "error_count": len(error_ids),
+            "selected_count": len(selected_ids),
             "error_accounts": [{"id": r["id"], "username": r["username"]}
                                for r in error_accounts],
             "sync": sync_result}

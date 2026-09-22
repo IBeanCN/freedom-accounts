@@ -33,6 +33,7 @@ const state = {
   expandedGroups: new Set(), // 操作项展开态：只由箭头 .group-toggle 写入，与选中态 / 账号列表完全解耦
   localEngine: true,         // 未配置 cloakserve CDP（本地 SDK 引擎）；「打开浏览器」按钮的渲染依据
   accountSort: { field: null, dir: "asc" }, // 账号表排序：field = 列 data-sort 值，dir = asc|desc
+  selectedAccounts: new Set(), // 当前分组勾选的账号 ID；批量操作按此过滤
 };
 
 /* ==========================================================================
@@ -370,7 +371,7 @@ function groupCard(g) {
 
   el.addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
-    if (act === "start") { e.stopPropagation(); return groupStart(g); }
+    if (act === "start") { e.stopPropagation(); return groupStart(g, []); }
     if (act === "open-browser") { e.stopPropagation(); return groupOpenBrowser(g); }
     if (act === "close-browser") { e.stopPropagation(); return groupCloseBrowser(g); }
     if (act === "sync") { e.stopPropagation(); return groupSync(g); }
@@ -473,6 +474,7 @@ async function groupSync(g) {
 
 async function selectGroup(id) {
   state.currentGroup = id;
+  state.selectedAccounts.clear();
   // 只做「选中 + 打开账号列表」。操作项（.group-actions）的展开态完全由箭头控制，
   // 这里绝不写 is-open / expandedGroups —— 否则点卡体会顺带把操作项摊开。
   const g = state.groups.find((x) => String(x.id) === String(id));
@@ -489,6 +491,7 @@ async function selectGroup(id) {
 function closeAccountsPanel() {
   state.currentGroup = null;
   state.accounts = [];
+  state.selectedAccounts.clear();
   $("#accounts-panel").classList.add("hidden");
   // 只取消选中态；卡片操作项保持用户自己控制（箭头）的展开状态
   $$("#groups-grid .group-card").forEach((c) => {
@@ -505,9 +508,18 @@ $$("#accounts-table .th-sort").forEach((th) => {
 });
 $("#btn-new-group").addEventListener("click", () => openGroupModal());
 
-async function groupStart(g) {
+$("#account-check-all").addEventListener("change", (e) => {
+  const checked = e.currentTarget.checked;
+  state.selectedAccounts = new Set(checked ? state.accounts.map((a) => String(a.id)) : []);
+  renderAccountRows();
+});
+
+async function groupStart(g, selectedIds = selectedAccountIds()) {
   try {
-    const d = await api(`/api/groups/${g.id}/start`, { method: "POST", body: {} });
+    const d = await api(`/api/groups/${g.id}/start`, {
+      method: "POST",
+      body: { account_ids: selectedIds.length ? selectedIds : null },
+    });
     toast(d.queued ? `已入队 ${d.queued} 个账号任务` : "已触发调度");
     setTimeout(loadGroups, 1200);
   } catch (e) { toast(e.message, true); }
@@ -538,12 +550,13 @@ function applyOpenBrowserVisibility(cdpUrl) {
 
 $("#btn-group-start").addEventListener("click", async () => {
   if (!state.currentGroup) return;
-  await groupStart({ id: state.currentGroup });
+  await groupStart({ id: state.currentGroup }, selectedAccountIds());
 });
 
 $("#btn-batch-fp").addEventListener("click", () => {
   if (!state.currentGroup) return toast("请先选择分组", true);
-  const n = state.accounts.length;
+  const selectedIds = selectedAccountIds();
+  const n = selectedIds.length || state.accounts.length;
   if (!n) return toast("该分组暂无账号", true);
   const g = state.groups.find((x) => String(x.id) === String(state.currentGroup));
   const hasTpl = g && g.fingerprint_template && Object.keys(g.fingerprint_template).length > 0;
@@ -556,9 +569,11 @@ $("#btn-batch-fp").addEventListener("click", () => {
 $("#form-batch-fp").addEventListener("submit", async (e) => {
   e.preventDefault();
   const mode = $("#batch-fp-mode").value;
+  const selectedIds = selectedAccountIds();
+  const n = selectedIds.length || state.accounts.length;
   const ok = await confirmDialog({
     title: "确认批量替换指纹",
-    message: `分组内 ${state.accounts.length} 个账号的指纹将被覆盖（方式：${
+    message: `分组内 ${n} 个账号的指纹将被覆盖（方式：${
       { seed_only: "仅换 seed", from_template: "按分组模板重建", random: "完全随机" }[mode]
     }），此操作不可撤销。`,
     okText: "执行替换",
@@ -566,7 +581,7 @@ $("#form-batch-fp").addEventListener("submit", async (e) => {
   if (!ok) return;
   try {
     const d = await api(`/api/groups/${state.currentGroup}/regenerate-fingerprints`, {
-      method: "POST", body: { mode },
+      method: "POST", body: { mode, account_ids: selectedIds.length ? selectedIds : null },
     });
     $("#dlg-batch-fp").close();
     toast(`已更新 ${d.updated} 个账号的指纹`);
@@ -900,12 +915,9 @@ $("#form-group").addEventListener("submit", async (e) => {
 async function loadAccounts(gid) {
   const d = await api(`/api/accounts?group_id=${gid}`);
   state.accounts = sortAccounts(d.accounts || []);
-  const tb = $("#accounts-table tbody");
-  tb.innerHTML = "";
-  state.accounts.forEach((a) => tb.appendChild(accountRow(a, gid)));
-  if (!state.accounts.length) {
-    tb.innerHTML = '<tr><td colspan="10"><span class="empty-state">该分组暂无账号，点击上方「添加账号」创建。</span></td></tr>';
-  }
+  state.selectedAccounts = new Set(
+    [...state.selectedAccounts].filter((id) => state.accounts.some((a) => String(a.id) === String(id))));
+  renderAccountRows();
   $("#accounts-count").textContent = `${state.accounts.length} 个账号`;
 }
 
@@ -947,7 +959,7 @@ function renderAccountRows() {
   tb.innerHTML = "";
   state.accounts.forEach((a) => tb.appendChild(accountRow(a, state.currentGroup)));
   if (!state.accounts.length) {
-    tb.innerHTML = '<tr><td colspan="10"><span class="empty-state">该分组暂无账号，点击上方「添加账号」创建。</span></td></tr>';
+    tb.innerHTML = '<tr><td colspan="11"><span class="empty-state">该分组暂无账号，点击上方「添加账号」创建。</span></td></tr>';
   }
   // update sort indicators on headers
   $$("#accounts-table .th-sort").forEach((th) => {
@@ -955,6 +967,27 @@ function renderAccountRows() {
     th.classList.toggle("is-sorted", active);
     th.classList.toggle("is-desc", active && state.accountSort.dir === "desc");
   });
+  updateAccountSelectionUI();
+}
+
+function selectedAccountIds() {
+  const ids = state.accounts
+    .filter((a) => state.selectedAccounts.has(String(a.id)))
+    .map((a) => Number(a.id));
+  return [...new Set(ids)];
+}
+
+function updateAccountSelectionUI() {
+  const total = state.accounts.length;
+  const selected = selectedAccountIds().length;
+  const checkAll = $("#account-check-all");
+  checkAll.checked = total > 0 && selected === total;
+  checkAll.indeterminate = selected > 0 && selected < total;
+  $("#btn-batch-delete").disabled = selected === 0;
+  const scope = selected ? `已选 ${selected}` : "全部账号";
+  $("#btn-group-start").textContent = `一键上号（${scope}）`;
+  $("#btn-batch-fp").textContent = `批量换指纹（${scope}）`;
+  $("#btn-batch-delete").textContent = selected ? `删除（已选 ${selected}）` : "删除账号";
 }
 
 function fpSummary(fp) {
@@ -967,11 +1000,17 @@ function accountRow(a, gid) {
   const tr = document.createElement("tr");
   const on = !!a.enabled;
   tr.classList.toggle("is-disabled", !on);
+  tr.classList.toggle("is-selected", state.selectedAccounts.has(String(a.id)));
   const proxyName = a.proxy_name
     ? `代理 ${a.proxy_name}`
     : "直连";
   tr.innerHTML = `
-    <td>
+    <td class="col-select">
+      <input class="checkbox account-select" type="checkbox" data-act="select"
+        data-id="${esc(a.id)}" ${state.selectedAccounts.has(String(a.id)) ? "checked" : ""}
+        aria-label="选择账号 ${esc(a.username)}">
+    </td>
+    <td class="col-account">
       <span class="cell-stack">
         <span>${esc(a.username)}</span>
         <span class="cell-sub">${a.remote_id ? `ID ${esc(a.remote_id)} · ` : ""}${a.remote_remark ? esc(a.remote_remark) : "无备注"}</span>
@@ -1004,6 +1043,14 @@ function accountRow(a, gid) {
   tr.addEventListener("click", async (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (!act) return;
+    if (act === "select") {
+      const id = String(e.target.closest(".account-select").dataset.id);
+      if (e.target.checked) state.selectedAccounts.add(id);
+      else state.selectedAccounts.delete(id);
+      tr.classList.toggle("is-selected", e.target.checked);
+      updateAccountSelectionUI();
+      return;
+    }
     if (act === "toggle-enabled") return toggleAccountEnabled(a, gid);
     if (act === "run") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
@@ -1033,6 +1080,7 @@ function accountRow(a, gid) {
       try {
         await api(`/api/accounts/${a.id}`, { method: "DELETE" });
         toast("账号已删除");
+        state.selectedAccounts.delete(String(a.id));
         await loadAccounts(gid);
         await loadGroups();
       } catch (err) { toast(err.message, true); }
@@ -1076,6 +1124,28 @@ async function regenFp(a) {
     await loadAccounts(state.currentGroup);
   } catch (e) { toast(e.message, true); }
 }
+
+$("#btn-batch-delete").addEventListener("click", async () => {
+  const selected = state.accounts.filter((a) => state.selectedAccounts.has(String(a.id)));
+  if (!selected.length) return;
+  const ok = await confirmDialog({
+    title: `删除 ${selected.length} 个账号`,
+    message: `将删除：${selected.map((a) => a.username).join("、")}。登录凭据、2FA 密钥与浏览器指纹将一并删除，此操作不可撤销。`,
+    okText: "删除账号",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const d = await api("/api/accounts/batch-delete", {
+      method: "POST",
+      body: { account_ids: selected.map((a) => Number(a.id)) },
+    });
+    toast(`已删除 ${d.deleted} 个账号`);
+    state.selectedAccounts.clear();
+    await loadAccounts(state.currentGroup);
+    await loadGroups();
+  } catch (err) { toast(err.message, true); }
+});
 
 /* ---------- 指纹检测 ---------- */
 

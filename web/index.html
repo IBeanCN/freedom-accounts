@@ -152,13 +152,15 @@
             <button id="btn-group-start" class="btn btn-primary btn-sm" type="button">一键上号（全部账号）</button>
             <button id="btn-new-account" class="btn btn-secondary btn-sm" type="button">添加账号</button>
             <button id="btn-batch-fp" class="btn btn-secondary btn-sm" type="button">批量换指纹</button>
+            <button id="btn-batch-delete" class="btn btn-secondary is-danger btn-sm" type="button" disabled>删除账号</button>
             <button id="btn-close-accounts" class="btn btn-text" type="button">收起</button>
           </header>
           <div class="table-wrap">
             <table class="tbl" id="accounts-table">
               <thead>
                 <tr>
-                  <th>账号 / 上游信息</th>
+                  <th class="col-select"><input id="account-check-all" class="checkbox" type="checkbox" aria-label="全选账号"></th>
+                  <th class="col-account">账号 / 上游信息</th>
                   <th class="th-sort" data-sort="remote_status">上游状态</th>
                   <th>浏览器指纹</th>
                   <th class="th-sort" data-sort="fp_check_result">检测结果</th>

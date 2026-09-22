@@ -636,6 +636,10 @@ tr.is-disabled .switch { opacity: 1; }
   flex: none;
   accent-color: var(--fa-accent);
 }
+.account-select {
+  display: inline-block;
+  vertical-align: middle;
+}
 
 /* 指纹检测风险圆点：正绿=低 / 橙黄=中 / 正红=高，悬停 tooltip 展示「风险等级/分数」 */
 .fp-badge {
@@ -656,6 +660,42 @@ tr.is-disabled .switch { opacity: 1; }
    层级：table > tr > td。单元格一律用 span 包裹内容。
    ========================================================================== */
 .table-wrap { overflow-x: auto; }
+
+/* 账号表：勾选列和账号列固定在左侧，横向滚动时批量选择入口始终可用 */
+.col-select {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  width: 56px;
+  min-width: 56px;
+  padding-right: var(--fa-space-2);
+  text-align: center;
+  border-right: 1px solid var(--fa-divider);
+}
+.col-account {
+  position: sticky;
+  left: 56px;
+  z-index: 4;
+  min-width: 180px;
+  background: var(--fa-canvas);
+  border-right: 1px solid var(--fa-divider);
+}
+.tbl th.col-select,
+.tbl th.col-account {
+  background: var(--fa-pearl);
+}
+.tbl tbody .col-select,
+.tbl tbody .col-account {
+  background: var(--fa-canvas);
+}
+.tbl tbody tr:hover .col-select,
+.tbl tbody tr:hover .col-account {
+  background: var(--fa-pearl);
+}
+.tbl tbody tr.is-selected .col-select,
+.tbl tbody tr.is-selected .col-account {
+  background: var(--fa-accent-soft);
+}
 
 .tbl {
   width: 100%;

@@ -380,6 +380,7 @@
 **列宽**：**表格用 auto layout，列宽由内容决定，不写固定宽度**（此前文档里列出的 `col-account` / `col-sm` / `col-md` / `tbl-wide` 四个固定宽度类从未在 `style.css` 实现，2026-09-21 清理）。仅两个例外：
 
 - `.col-actions` / `.col-actions-sm` —— 置 `width: 1%`，把操作列压缩到内容宽度，避免把前面的信息列挤窄。
+- `.col-select` / `.col-account` —— 账号表固定左列。勾选列始终贴左，账号列跟随其后固定，横向滚动时选择入口和身份信息不丢失。
 - 长文本列靠 `.cell-stack { max-width: 260px }` + 文本省略号控制，而不是给 `th` 定宽。
 
 **单元格内容必须用 `<span>` 包裹。** 因为 `.tbl` 的结构约定是 `table > tr > td`，直接给 `td` 挂 `display: flex` 会破坏 `vertical-align: middle`。可用的单元格类：

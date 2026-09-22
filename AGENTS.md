@@ -69,16 +69,17 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET | `/api/meta` | 注册表下发：`login_types`（流程适配器）/ `group_types`（平台注册表），驱动前端下拉 |
 | GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理） |
 | PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`）/ 删除分组 |
-| POST | `/api/groups/{id}/start` | 分组一键上号 |
+| POST | `/api/groups/{id}/start` | 分组一键上号；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且只入队 `error` 状态的启用账号 |
 | POST | `/api/groups/{id}/open-browser` | 打开常驻交互浏览器（本地 SDK 引擎专用：配置了 `cloak_cdp_url` 时 409 拒绝）。用分组指纹模板（无模板则全随机，seed 必随机）+ 分组代理、有头模式；按组幂等（`reused:true` 表示复用已开窗口），不自动关闭，`/close-browser` 或服务停止时关闭 |
 | POST | `/api/groups/{id}/close-browser` | 关闭该分组的常驻交互浏览器（无会话时 `closed:false`，幂等） |
-| POST | `/api/groups/{id}/regenerate-fingerprints` | 批量换指纹（`mode`: seed_only / from_template / random） |
+| POST | `/api/groups/{id}/regenerate-fingerprints` | 批量换指纹（`mode`: seed_only / from_template / random；body 可选 `account_ids`，有值只改选中账号，空/缺省改全部账号） |
 | POST | `/api/groups/{id}/sync-accounts` | 同步上游账号，身份键=上游 `remote_id`：已存在→仅更新上游字段（username 显示名取 email、`remote_status`/`remote_remark` 独立列；密码/2FA/指纹/代理等本地属性不动）；上游没有的 synced 行删除；新增按分组指纹模板落库；与上游账号（email/用户名）重复的本地账号全部停用（body 可选 `dry_run`，返回含 `disabled` 计数）。上游状态由适配器转中文（normal/quota_exhausted/rate_limited/disabled/error/refresh_backoff → 正常/配额耗尽/限流中/已停用/错误/退避中），仅展示、不影响本地 enabled |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（含 `enabled` 启用状态、`proxy_id` 关联代理，默认开/直连） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（running 状态禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/start` | 按账号批量上号（自动跳过停用账号，返回 `blocked` 计数） |
+| POST | `/api/accounts/batch-delete` | 批量删除选中账号；`account_ids` 必填，任一账号 running 时整批 409 拒绝 |
 | POST | `/api/accounts/{id}/regenerate-fingerprint` | 重新生成指纹 |
 | POST | `/api/accounts/{id}/fp-check` | 触发指纹检测（后台浏览器打开检测站→点 #retest→读 #risk-badge/#score-value，结果写回 `fp_check_result`，形如 高风险/80）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | GET | `/api/accounts/{id}/tasks` | 该账号的任务记录 |

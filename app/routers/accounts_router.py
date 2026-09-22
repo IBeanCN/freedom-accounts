@@ -33,6 +33,10 @@ class StartBody(BaseModel):
     account_ids: Optional[list[int]] = None
 
 
+class BatchDeleteBody(BaseModel):
+    account_ids: list[int] = Field(min_length=1)
+
+
 class EnabledBody(BaseModel):
     enabled: bool
 
@@ -219,6 +223,37 @@ async def start_accounts(body: StartBody):
     for gid, aids in by_group.items():
         total += await scheduler.enqueue(gid, aids)
     return {"ok": True, "queued": total, "blocked": blocked}
+
+
+@router.post("/batch-delete")
+async def batch_delete_accounts(body: BatchDeleteBody):
+    """Delete selected accounts; refuse the whole batch if any one is running."""
+    db = await database.get_db()
+    account_ids = list(dict.fromkeys(body.account_ids))
+    marks = ",".join("?" * len(account_ids))
+    rows = await db.execute(
+        f"SELECT id, username, last_status FROM accounts WHERE id IN ({marks})",
+        tuple(account_ids))
+    selected = await rows.fetchall()
+    if not selected:
+        raise HTTPException(404, "所选账号不存在")
+
+    running = [dict(r) for r in selected if r["last_status"] == "running"]
+    if running:
+        names = "、".join(f"#{r['id']} {r['username']}" for r in running)
+        raise HTTPException(409, f"账号正在运行，不能删除: {names}")
+
+    deletable_ids = [r["id"] for r in selected]
+    cur = await db.execute(
+        f"DELETE FROM accounts WHERE id IN ({','.join('?' * len(deletable_ids))})",
+        tuple(deletable_ids))
+    await db.commit()
+    return {
+        "ok": True,
+        "deleted": cur.rowcount,
+        "blocked": len(running),
+        "missing": len(account_ids) - len(selected),
+    }
 
 
 @router.post("/{account_id}/regenerate-fingerprint")
