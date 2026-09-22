@@ -10,6 +10,7 @@ from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
+from ..automation.flows import requires_openai_credentials
 from ..automation.flows.adapters._util import translate_remote_status
 from .deps import require_admin
 
@@ -41,23 +42,30 @@ async def list_accounts(group_id: Optional[int] = None):
     db = await database.get_db()
     if group_id:
         rows = await db.execute(
-            """SELECT a.*, p.name AS proxy_name,
+            """SELECT a.*, g.proxy_id AS group_proxy_id,
+                      p.name AS proxy_name,
                       p.timezone AS proxy_timezone, p.country AS proxy_country,
                       p.city AS proxy_city, p.locale AS proxy_locale
-               FROM accounts a LEFT JOIN proxies p ON p.id=a.proxy_id
+               FROM accounts a
+               LEFT JOIN groups g ON g.id=a.group_id
+               LEFT JOIN proxies p ON p.id=COALESCE(a.proxy_id, g.proxy_id)
                WHERE a.group_id=? ORDER BY a.id DESC""", (group_id,))
     else:
         rows = await db.execute(
-            """SELECT a.*, p.name AS proxy_name,
+            """SELECT a.*, g.proxy_id AS group_proxy_id,
+                      p.name AS proxy_name,
                       p.timezone AS proxy_timezone, p.country AS proxy_country,
                       p.city AS proxy_city, p.locale AS proxy_locale
-               FROM accounts a LEFT JOIN proxies p ON p.id=a.proxy_id
+               FROM accounts a
+               LEFT JOIN groups g ON g.id=a.group_id
+               LEFT JOIN proxies p ON p.id=COALESCE(a.proxy_id, g.proxy_id)
                ORDER BY a.id DESC""")
     out = []
     for r in await rows.fetchall():
         d = dict(r)
         d["fingerprint"] = fp_mod.sanitize(d.get("fingerprint"))
-        d.pop("password", None)      # never return passwords to the frontend
+        # 凭据只暴露是否存在，用于上号前的前端提示；值永不回传前端。
+        d["has_password"] = bool(d.pop("password", None))
         d["has_totp"] = bool(d.pop("totp_secret", ""))
         # upstream status is display-only: translate at the API layer so the
         # frontend renders the value as-is; local `enabled` is independent
@@ -176,18 +184,34 @@ async def start_accounts(body: StartBody):
     if body.account_ids:
         marks = ",".join("?" * len(body.account_ids))
         rows = await db.execute(
-            f"SELECT id, group_id, enabled FROM accounts WHERE id IN ({marks})",
+            f"""SELECT a.id, a.group_id, a.enabled, a.username, a.password,
+                       a.totp_secret, g.login_type
+                FROM accounts a JOIN groups g ON g.id=a.group_id
+                WHERE a.id IN ({marks})""",
             tuple(body.account_ids))
     else:
         raise HTTPException(400, "account_ids required")
-    pairs, blocked = [], 0
+    pairs, enabled_rows, blocked = [], [], 0
     for r in await rows.fetchall():
         if r["enabled"]:
             pairs.append((r["group_id"], r["id"]))
+            enabled_rows.append(dict(r))
         else:
             blocked += 1
     if not pairs:
         raise HTTPException(409, "所选账号均已停用，仅允许编辑/删除")
+    openai_rows = [r for r in enabled_rows if requires_openai_credentials(r["login_type"])]
+    if openai_rows:
+        missing = [
+            f"#{r['id']} {r['username']}"
+            + ("（缺密码）" if not r["password"] else "")
+            + ("（缺2FA）" if not r["totp_secret"] else "")
+            for r in openai_rows if not r["password"] or not r["totp_secret"]
+        ]
+        if missing:
+            raise HTTPException(
+                400, "以下账号未配置密码或2FA，请先编辑账号: " + "、".join(missing))
+
     by_group: dict[int, list[int]] = {}
     for gid, aid in pairs:
         by_group.setdefault(gid, []).append(aid)

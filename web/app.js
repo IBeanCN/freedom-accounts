@@ -1052,6 +1052,10 @@ async function toggleAccountEnabled(a, gid) {
 }
 
 async function accountRun(a) {
+  if (!a.has_password || !a.has_totp) {
+    toast(`账号 ${a.username} 未配置密码或2FA，请先编辑账号`, true);
+    return;
+  }
   try {
     const d = await api("/api/accounts/start", { method: "POST", body: { account_ids: [a.id] } });
     toast(`任务已入队（${d.queued}）`);
@@ -1153,7 +1157,8 @@ function openAccountModal(a = null) {
   $("#a-browser_mode").value = a?.browser_mode || "inherit";
   $("#a-enabled").checked = a ? !!a.enabled : true;
   $("#a-remark").value = a?.remark || "";
-  fillProxySelect(a?.proxy_id || "");
+  // 账号未单独配置代理时，编辑框回填分组代理，和后端实际生效链路保持一致。
+  fillProxySelect(a?.proxy_id || a?.group_proxy_id || "");
   const fp = a?.fingerprint || {};
   fillAccountFpForm(fp);
   $("#dlg-account").showModal();

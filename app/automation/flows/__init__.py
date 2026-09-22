@@ -10,8 +10,9 @@ Adapter contract (see base.py):
     groups keep working.
 """
 from .registry import (ADAPTERS, LOGIN_TYPES, get_adapter, pick_flow, run_flow,
-                       validate_login_type)
+                       requires_openai_credentials, validate_login_type)
 from ..platforms import GROUP_TYPES, PLATFORMS
 
 __all__ = ["ADAPTERS", "LOGIN_TYPES", "GROUP_TYPES", "PLATFORMS",
-           "get_adapter", "pick_flow", "run_flow", "validate_login_type"]
+           "get_adapter", "pick_flow", "requires_openai_credentials",
+           "run_flow", "validate_login_type"]

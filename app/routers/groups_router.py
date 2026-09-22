@@ -10,7 +10,7 @@ from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
-from ..automation.flows import validate_login_type, get_adapter
+from ..automation.flows import validate_login_type, get_adapter, requires_openai_credentials
 from ..automation.platforms import is_known_group_type
 from ..automation.flows.adapters._util import translate_remote_status
 from .deps import require_admin
@@ -324,11 +324,22 @@ async def start_group(group_id: int, body: StartBody):
 
     # step 2) filter: only enabled accounts with remote_status='error'
     rows = await db.execute(
-        """SELECT id, username, remote_status FROM accounts
+        """SELECT id, username, remote_status, password, totp_secret FROM accounts
            WHERE group_id=? AND enabled=1 AND remote_status='error'
            ORDER BY id""",
         (group_id,))
     error_accounts = await rows.fetchall()
+
+    if error_accounts and requires_openai_credentials(g["login_type"]):
+        missing = [
+            f"#{r['id']} {r['username']}"
+            + ("（缺密码）" if not r["password"] else "")
+            + ("（缺2FA）" if not r["totp_secret"] else "")
+            for r in error_accounts if not r["password"] or not r["totp_secret"]
+        ]
+        if missing:
+            raise HTTPException(
+                400, "以下账号未配置密码或2FA，请先编辑账号: " + "、".join(missing))
 
     if not error_accounts:
         return {"ok": True, "queued": 0, "error_count": 0, "sync": sync_result,

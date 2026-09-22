@@ -21,6 +21,9 @@ _RUN_CONTEXT_SUPPORTED: dict[object, bool] = {}
 # login types exposed to the frontend dropdown (label shown, key stored)
 LOGIN_TYPES: list[dict] = [a.manifest() for a in ADAPTERS]
 
+# OpenAI 授权流程必须先完成账号密码和 TOTP 前置校验，避免浏览器启动后才失败。
+OPENAI_AUTH_TYPES = {"sub2api", "cpr"}
+
 
 def pick_flow(login_type: str, sync: bool):
     """Return the flow callable for `login_type`.
@@ -42,6 +45,11 @@ def validate_login_type(value: str) -> str:
 def get_adapter(login_type: str):
     """Return the adapter class for `login_type` (falls back to password)."""
     return ADAPTER_MAP.get((login_type or "").strip().lower(), PasswordAdapter)
+
+
+def requires_openai_credentials(login_type: str) -> bool:
+    """Whether a flow performs the shared OpenAI browser auth sequence."""
+    return (login_type or "").strip().lower() in OPENAI_AUTH_TYPES
 
 
 async def run_flow(login_type: str, ctx, username: str, password: str,
