@@ -19,11 +19,30 @@ FINGERPRINT_FIELDS = [
 
 _PLATFORMS = ["windows", "macos"]
 _BRANDS = ["Chrome", "Edge", "Opera", "Vivaldi"]
-_GPU_COMBOS = [
-    ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
-    ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
-    ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
-]
+# GPU 与平台强绑定：Direct3D11 只存在于 Windows，Mac 只有 Apple Metal。
+# 跨平台混搭（如 macos + D3D11）是检测站一眼识别的硬伤。
+_GPU_COMBOS = {
+    "windows": [
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ],
+    "macos": [
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Intel(R) Iris(TM) Plus Graphics 645, Unspecified Version)"),
+    ],
+}
+# 屏幕用各平台常见逻辑分辨率：1536x864 是 Windows 125% 缩放产物，Mac 没有
+_SCREENS = {
+    "windows": [(1280, 720), (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080)],
+    "macos": [(1440, 900), (1470, 956), (1512, 982), (1728, 1117), (1920, 1080), (2560, 1440)],
+}
+_CORES = {
+    "windows": [4, 6, 8, 12, 16],
+    "macos": [8, 10, 12],   # Apple Silicon M1=8 / Pro=10 / M2/M3 Pro=12
+}
 _TIMEZONES = ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Chicago",
               "Europe/London", "Europe/Berlin", "Asia/Singapore", "America/Los_Angeles"]
 _LOCALES = ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"]
@@ -32,9 +51,8 @@ _LOCALES = ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"]
 def generate_fingerprint() -> dict:
     """Random but self-consistent fingerprint config."""
     platform = random.choice(_PLATFORMS)
-    gpu = random.choice(_GPU_COMBOS)
-    width = random.choice([1280, 1366, 1440, 1536, 1600, 1920])
-    height = {1280: 720, 1366: 768, 1440: 900, 1536: 864, 1600: 900, 1920: 1080}[width]
+    gpu = random.choice(_GPU_COMBOS[platform])
+    width, height = random.choice(_SCREENS[platform])
     fp = {
         "seed": random.randint(1, 10**9),
         "platform": platform,
@@ -42,8 +60,9 @@ def generate_fingerprint() -> dict:
         "brand_version": random.randint(130, 151),
         "gpu_vendor": gpu[0],
         "gpu_renderer": gpu[1],
-        "hardware_concurrency": random.choice([4, 6, 8, 12, 16]),
-        "device_memory": random.choice([4, 8, 16]),
+        "hardware_concurrency": random.choice(_CORES[platform]),
+        # Chrome 规范 deviceMemory 上限为 8，报 16 必假
+        "device_memory": random.choice([4, 8, 8]),
         "screen_width": width,
         "screen_height": height,
         "timezone": random.choice(_TIMEZONES),
