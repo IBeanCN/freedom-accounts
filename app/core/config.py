@@ -65,6 +65,9 @@ if not ENCRYPTION_KEY:
 HOST = os.environ.get("FA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("FA_PORT", "8000"))
 
+# Docker: auto-fill CDP address from env; only used when the DB value is empty
+FA_CDP_URL = os.environ.get("FA_CDP_URL", "").strip()
+
 # Callback
 CALLBACK_TIMEOUT_SECONDS = float(os.environ.get("FA_CALLBACK_TIMEOUT", "15"))
 

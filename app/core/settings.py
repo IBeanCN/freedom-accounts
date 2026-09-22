@@ -29,6 +29,14 @@ async def init_settings() -> None:
             if key == "admin_password_hash" and not default:
                 value = auth.hash_password(config.INITIAL_ADMIN_PASSWORD)
             await db.execute("INSERT INTO settings(key,value) VALUES(?,?)", (key, value))
+    # Docker: auto-fill cloak_cdp_url when env FA_CDP_URL is set and DB is empty
+    if config.FA_CDP_URL:
+        row = await db.execute("SELECT value FROM settings WHERE key='cloak_cdp_url'")
+        existing = await row.fetchone()
+        if existing is not None and not (existing["value"] or "").strip():
+            await db.execute(
+                "UPDATE settings SET value=? WHERE key='cloak_cdp_url'",
+                (config.FA_CDP_URL,))
     await db.commit()
     await refresh_cache()
 
