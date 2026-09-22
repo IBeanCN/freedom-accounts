@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
-from ..core import config, database, settings
+from ..core import config, crypto, database, settings
 from . import fingerprint as fp_mod
 
 # Try to import cloakbrowser SDK once at module load.
@@ -101,7 +101,7 @@ async def resolve_browser_mode(account_mode: str, group_mode: str) -> str:
 async def resolve_proxy(account_proxy_id, group_proxy_id) -> str:
     """Proxy priority: account > group; NULL/0/missing on both -> '' (direct).
 
-    Returns the full proxy server URL from the proxies table.
+    Returns the decrypted full proxy server URL from the proxies table.
     """
     pid = account_proxy_id or group_proxy_id
     if not pid:
@@ -111,7 +111,7 @@ async def resolve_proxy(account_proxy_id, group_proxy_id) -> str:
     p = await row.fetchone()
     if not p or not (p["server"] or "").strip():
         return ""
-    return p["server"].strip()
+    return crypto.decrypt(p["server"]).strip()
 
 
 def mask_proxy_server(server: str) -> str:

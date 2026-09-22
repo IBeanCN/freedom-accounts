@@ -1997,7 +1997,7 @@ $("#logout-btn").addEventListener("click", async () => {
 
 (async function boot() {
   applyTheme(document.documentElement.getAttribute("data-theme") || "light", false);
-  if (!TOKEN) return showLogin();
+  // 登录态保存在 HttpOnly Cookie；刷新后内存 TOKEN 丢失也必须先用 Cookie 恢复。
   try {
     await api("/api/auth/me");
     showMain();
