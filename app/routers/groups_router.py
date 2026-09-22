@@ -45,6 +45,99 @@ class StartBody(BaseModel):
     account_ids: Optional[list[int]] = None   # empty/None => all accounts in group
 
 
+async def _apply_remote_sync(db, group_row, remote_data: dict) -> dict:
+    """Apply upstream account data to the local DB (shared by sync + start).
+
+    Returns counts: {created, updated, deleted, disabled, ignored, remote_total}.
+    The caller is responsible for fetching the remote data via the adapter.
+    """
+    group_id = group_row["id"]
+    remote_items: dict[str, dict] = {}
+    for it in remote_data.get("accounts", []):
+        rid = str(it.get("id") or "").strip()
+        if rid:
+            remote_items.setdefault(rid, it)
+    remote_names: set[str] = {
+        str(it.get("email") or it.get("name") or "").strip().lower()
+        for it in remote_items.values()}
+    remote_names.discard("")
+    remote_identity_ids: dict[str, set[str]] = {}
+    for rid, item in remote_items.items():
+        identity = str(item.get("email") or item.get("name") or "").strip().lower()
+        if identity:
+            remote_identity_ids.setdefault(identity, set()).add(rid)
+
+    rows = await db.execute("SELECT * FROM accounts WHERE group_id=?", (group_id,))
+    local_rows = await rows.fetchall()
+    local_by_rid: dict[str, dict] = {}
+    for r in local_rows:
+        d = dict(r)
+        rid = (d.get("remote_id") or "").strip()
+        if rid:
+            local_by_rid[rid] = d
+
+    created = deleted = updated = disabled = 0
+    template = group_row.get("fingerprint_template") or "{}"
+    has_tpl = bool(fp_mod.sanitize(template))
+
+    # step 1) synced rows whose remote id vanished upstream -> delete
+    for rid, row in local_by_rid.items():
+        if rid not in remote_items:
+            await db.execute("DELETE FROM accounts WHERE id=?", (row["id"],))
+            deleted += 1
+
+    # step 2) upsert by remote_id
+    for rid, it in remote_items.items():
+        display = str(it.get("email") or it.get("name") or rid).strip()
+        status = str(it.get("status_label")
+                     or translate_remote_status(it.get("status"))
+                     or "").strip()
+        up_remark = str(it.get("remark") or "").strip()
+        row = local_by_rid.get(rid)
+        if row is not None:
+            await db.execute(
+                """UPDATE accounts SET username=?, remote_status=?,
+                   remote_remark=? WHERE id=?""",
+                (display or row["username"], status or row["remote_status"],
+                 up_remark, row["id"]))
+            updated += 1
+        else:
+            fp = fp_mod.generate_from_template(template) if has_tpl \
+                else fp_mod.generate_fingerprint()
+            await db.execute(
+                """INSERT INTO accounts(group_id,username,password,fingerprint,
+                   remote_id,remote_status,remote_remark)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (group_id, display or rid, "", json.dumps(fp, ensure_ascii=False),
+                 rid, status, up_remark))
+            created += 1
+
+    # step 3) disable duplicates after final display usernames are known.
+    rows = await db.execute(
+        "SELECT id, username, remote_id, enabled FROM accounts WHERE group_id=?",
+        (group_id,))
+    final_rows = await rows.fetchall()
+    dup_ids: list[int] = []
+    for row in final_rows:
+        identity = (row["username"] or "").strip().lower()
+        remote_ids = remote_identity_ids.get(identity, set())
+        rid = (row["remote_id"] or "").strip()
+        manual_duplicate = not rid and identity in remote_names
+        synced_duplicate = bool(rid) and len(remote_ids) > 1 and rid in remote_ids
+        if (manual_duplicate or synced_duplicate) and row["enabled"]:
+            dup_ids.append(row["id"])
+    for aid in dup_ids:
+        await db.execute(
+            "UPDATE accounts SET enabled=0 WHERE id=? AND enabled=1", (aid,))
+        disabled += 1
+
+    await db.commit()
+    ignored = max(0, len(remote_items) - created)
+    return {"created": created, "updated": updated, "deleted": deleted,
+            "disabled": disabled, "ignored": ignored,
+            "remote_total": len(remote_items)}
+
+
 class RegenFpBody(BaseModel):
     """Batch-replace fingerprints of every account in the group.
 
@@ -199,23 +292,55 @@ async def delete_group(group_id: int):
 @router.post("/{group_id}/start")
 async def start_group(group_id: int, body: StartBody):
     db = await database.get_db()
-    row = await db.execute("SELECT id FROM groups WHERE id=?", (group_id,))
-    if not await row.fetchone():
+    g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
+    if not g:
         raise HTTPException(404, "group not found")
-    if body.account_ids:
-        marks = ",".join("?" * len(body.account_ids))
-        rows = await db.execute(
-            f"""SELECT id FROM accounts WHERE group_id=? AND enabled=1
-                AND id IN ({marks})""",
-            (group_id, *body.account_ids))
-    else:
-        rows = await db.execute(
-            "SELECT id FROM accounts WHERE group_id=? AND enabled=1", (group_id,))
-    ids = [r["id"] for r in await rows.fetchall()]
-    if not ids:
-        raise HTTPException(400, "no accounts to run")
-    n = await scheduler.enqueue(group_id, ids)
-    return {"ok": True, "queued": n}
+
+    # pre-validation: config must be complete before any sync or start
+    errors = []
+    if not (g["login_url"] or "").strip():
+        errors.append("上号地址未配置")
+    if g["login_type"] in ("sub2api", "cpr") and not (g["upstream_key"] or "").strip():
+        errors.append("上游 API Key 未配置")
+    if errors:
+        raise HTTPException(400, "前置校验失败: " + "; ".join(errors))
+
+    # step 1) sync accounts from upstream to refresh remote_status
+    adapter_group = dict(g)
+    if adapter_group.get("upstream_key"):
+        adapter_group["upstream_key"] = crypto.decrypt(adapter_group["upstream_key"])
+    adapter = get_adapter(g["login_type"])()
+    sync_result = None
+    try:
+        remote = await adapter.list_accounts(adapter_group)
+        if remote is not None:
+            sync_result = await _apply_remote_sync(db, dict(g), remote)
+    except NotImplementedError:
+        pass  # adapter doesn't support sync, proceed with local data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"同步上游账号失败: {e}")
+
+    # step 2) filter: only enabled accounts with remote_status='error'
+    rows = await db.execute(
+        """SELECT id, username, remote_status FROM accounts
+           WHERE group_id=? AND enabled=1 AND remote_status='error'
+           ORDER BY id""",
+        (group_id,))
+    error_accounts = await rows.fetchall()
+
+    if not error_accounts:
+        return {"ok": True, "queued": 0, "error_count": 0, "sync": sync_result,
+                "message": "同步完成，没有上游状态为「错误」的启用账号，无需上号"}
+
+    # step 3) enqueue only the error accounts
+    error_ids = [r["id"] for r in error_accounts]
+    n = await scheduler.enqueue(group_id, error_ids)
+    return {"ok": True, "queued": n, "error_count": len(error_ids),
+            "error_accounts": [{"id": r["id"], "username": r["username"]}
+                               for r in error_accounts],
+            "sync": sync_result}
 
 
 class SyncBody(BaseModel):
@@ -251,105 +376,8 @@ async def sync_accounts(group_id: int, body: SyncBody):
     except Exception as e:
         raise HTTPException(502, f"拉取上游账号失败: {e}")
 
-    # upstream items keyed by remote id; display name prefers the email
-    remote_items: dict[str, dict] = {}
-    for it in remote.get("accounts", []):
-        rid = str(it.get("id") or "").strip()
-        if rid:
-            remote_items.setdefault(rid, it)
-    # distinct upstream emails/usernames, for the duplicate-disable rule
-    remote_names: set[str] = {
-        str(it.get("email") or it.get("name") or "").strip().lower()
-        for it in remote_items.values()}
-    remote_names.discard("")
-    remote_identity_ids: dict[str, set[str]] = {}
-    for rid, item in remote_items.items():
-        identity = str(item.get("email") or item.get("name") or "").strip().lower()
-        if identity:
-            remote_identity_ids.setdefault(identity, set()).add(rid)
-
-    rows = await db.execute(
-        "SELECT * FROM accounts WHERE group_id=?", (group_id,))
-    local_rows = await rows.fetchall()
-
-    # local rows indexed by remote_id (synced rows only)
-    local_by_rid: dict[str, dict] = {}
-    for r in local_rows:
-        d = dict(r)
-        rid = (d.get("remote_id") or "").strip()
-        if rid:
-            local_by_rid[rid] = d
-
-    created = deleted = updated = disabled = ignored = 0
-
-    if not body.dry_run:
-        template = g["fingerprint_template"] if "fingerprint_template" in g.keys() else "{}"
-        has_tpl = bool(fp_mod.sanitize(template))
-
-    # step 1) synced rows whose remote id vanished upstream -> delete
-        for rid, row in local_by_rid.items():
-            if rid not in remote_items:
-                await db.execute("DELETE FROM accounts WHERE id=?", (row["id"],))
-                deleted += 1
-
-        # step 2) upsert by remote_id
-        for rid, it in remote_items.items():
-            # display name: email first, upstream name second, id last
-            display = str(it.get("email") or it.get("name") or rid).strip()
-            # status already translated to Chinese by the adapter
-            # (status_label); raw status kept only as fallback
-            status = str(it.get("status_label")
-                         or translate_remote_status(it.get("status"))
-                         or "").strip()
-            up_remark = str(it.get("remark") or "").strip()
-            row = local_by_rid.get(rid)
-            if row is not None:
-                # refresh ONLY upstream-owned fields; password/totp/fp/proxy/
-                # enabled stay exactly as the user configured them
-                await db.execute(
-                    """UPDATE accounts SET username=?, remote_status=?,
-                       remote_remark=? WHERE id=?""",
-                    (display or row["username"], status or row["remote_status"],
-                     up_remark, row["id"]))
-                updated += 1
-            else:
-                fp = fp_mod.generate_from_template(template) if has_tpl \
-                    else fp_mod.generate_fingerprint()
-                await db.execute(
-                    """INSERT INTO accounts(group_id,username,password,fingerprint,
-                       remote_id,remote_status,remote_remark)
-                       VALUES(?,?,?,?,?,?,?)""",
-                    (group_id, display or rid, "", json.dumps(fp, ensure_ascii=False),
-                     rid, status, up_remark))
-                created += 1
-
-        # step 3) disable duplicates after final display usernames are known.
-        rows = await db.execute(
-            "SELECT id, username, remote_id, enabled FROM accounts WHERE group_id=?",
-            (group_id,))
-        final_rows = await rows.fetchall()
-        dup_ids: list[int] = []
-        for row in final_rows:
-            identity = (row["username"] or "").strip().lower()
-            remote_ids = remote_identity_ids.get(identity, set())
-            rid = (row["remote_id"] or "").strip()
-            manual_duplicate = not rid and identity in remote_names
-            synced_duplicate = bool(rid) and len(remote_ids) > 1 and rid in remote_ids
-            if (manual_duplicate or synced_duplicate) and row["enabled"]:
-                dup_ids.append(row["id"])
-        for aid in dup_ids:
-            await db.execute(
-                "UPDATE accounts SET enabled=0 WHERE id=? AND enabled=1", (aid,))
-            disabled += 1
-
-        await db.commit()
-        ignored = max(0, len(remote_items) - created)
-    else:
-        ignored = sum(1 for rid in remote_items if rid in local_by_rid)
-
-    return {"ok": True, "dry_run": body.dry_run, "created": created,
-            "updated": updated, "deleted": deleted, "disabled": disabled,
-            "ignored": ignored, "remote_total": len(remote_items)}
+    counts = await _apply_remote_sync(db, dict(g), remote)
+    return {"ok": True, "dry_run": body.dry_run, **counts}
 
 
 @router.post("/{group_id}/fp-check")

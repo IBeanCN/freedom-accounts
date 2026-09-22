@@ -32,6 +32,7 @@ const state = {
   proxyGeoPrefilled: false,  // geo fields already backfilled in current modal session
   expandedGroups: new Set(), // 操作项展开态：只由箭头 .group-toggle 写入，与选中态 / 账号列表完全解耦
   localEngine: true,         // 未配置 cloakserve CDP（本地 SDK 引擎）；「打开浏览器」按钮的渲染依据
+  accountSort: { field: null, dir: "asc" }, // 账号表排序：field = 列 data-sort 值，dir = asc|desc
 };
 
 /* ==========================================================================
@@ -497,6 +498,11 @@ function closeAccountsPanel() {
 }
 
 $("#btn-close-accounts").addEventListener("click", closeAccountsPanel);
+
+/* 账号表排序表头：点击切换 asc/desc */
+$$("#accounts-table .th-sort").forEach((th) => {
+  th.addEventListener("click", () => toggleAccountSort(th.dataset.sort));
+});
 $("#btn-new-group").addEventListener("click", () => openGroupModal());
 
 async function groupStart(g) {
@@ -893,7 +899,7 @@ $("#form-group").addEventListener("submit", async (e) => {
 
 async function loadAccounts(gid) {
   const d = await api(`/api/accounts?group_id=${gid}`);
-  state.accounts = d.accounts || [];
+  state.accounts = sortAccounts(d.accounts || []);
   const tb = $("#accounts-table tbody");
   tb.innerHTML = "";
   state.accounts.forEach((a) => tb.appendChild(accountRow(a, gid)));
@@ -901,6 +907,54 @@ async function loadAccounts(gid) {
     tb.innerHTML = '<tr><td colspan="10"><span class="empty-state">该分组暂无账号，点击上方「添加账号」创建。</span></td></tr>';
   }
   $("#accounts-count").textContent = `${state.accounts.length} 个账号`;
+}
+
+/** Sort accounts by the active sort field; Chinese-safe localeCompare for text fields. */
+function sortAccounts(accounts) {
+  const { field, dir } = state.accountSort;
+  if (!field || dir === "") return accounts;
+  const mul = dir === "desc" ? -1 : 1;
+  return [...accounts].sort((a, b) => {
+    let va = a[field], vb = b[field];
+    // empty values always sink to the bottom
+    const emptyA = va == null || va === "";
+    const emptyB = vb == null || vb === "";
+    if (emptyA && emptyB) return 0;
+    if (emptyA) return 1;
+    if (emptyB) return -1;
+    if (field === "last_run_at") {
+      // timestamp strings sort lexicographically
+      return mul * String(va).localeCompare(String(vb));
+    }
+    return mul * String(va).localeCompare(String(vb), "zh-Hans-CN");
+  });
+}
+
+/** Toggle account sort on th click; re-render the table body. */
+function toggleAccountSort(field) {
+  if (state.accountSort.field === field) {
+    state.accountSort.dir = state.accountSort.dir === "asc" ? "desc" : "asc";
+  } else {
+    state.accountSort = { field, dir: "asc" };
+  }
+  state.accounts = sortAccounts(state.accounts);
+  renderAccountRows();
+}
+
+/** Re-render the accounts table body from state.accounts (without re-fetching). */
+function renderAccountRows() {
+  const tb = $("#accounts-table tbody");
+  tb.innerHTML = "";
+  state.accounts.forEach((a) => tb.appendChild(accountRow(a, state.currentGroup)));
+  if (!state.accounts.length) {
+    tb.innerHTML = '<tr><td colspan="10"><span class="empty-state">该分组暂无账号，点击上方「添加账号」创建。</span></td></tr>';
+  }
+  // update sort indicators on headers
+  $$("#accounts-table .th-sort").forEach((th) => {
+    const active = th.dataset.sort === state.accountSort.field;
+    th.classList.toggle("is-sorted", active);
+    th.classList.toggle("is-desc", active && state.accountSort.dir === "desc");
+  });
 }
 
 function fpSummary(fp) {

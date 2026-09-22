@@ -705,6 +705,30 @@ tr.is-disabled .switch { opacity: 1; }
 }
 .cell-strong { font-weight: var(--fa-fw-medium); }
 .cell-danger { color: var(--fa-danger); font-size: var(--fa-fs-label); }
+.th-sort {
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--fa-dur) var(--fa-ease);
+}
+.th-sort:hover { color: var(--fa-accent); }
+.th-sort::after {
+  content: "";
+  display: inline-block;
+  margin-left: 4px;
+  border: 4px solid transparent;
+  border-top-color: var(--fa-text-3);
+  vertical-align: middle;
+  opacity: 0.4;
+}
+.th-sort.is-sorted::after {
+  opacity: 1;
+  border-top-color: var(--fa-accent);
+}
+.th-sort.is-sorted.is-desc::after {
+  border-top-color: transparent;
+  border-bottom-color: var(--fa-accent);
+  margin-top: 6px;
+}
 .latency-ok {
   font-variant-numeric: tabular-nums;
   color: var(--fa-success);
