@@ -10,15 +10,18 @@ services:
       FA_CALLBACK_TIMEOUT: ${FA_CALLBACK_TIMEOUT:-15}
       FA_MAX_CONCURRENCY: ${FA_MAX_CONCURRENCY:-5}
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
-      FA_CDP_URL: http://browser:${CLOAKSERVE_PORT:-9222}
+      # Docker 网络内固定使用官方 cloakserve 端口。
+      FA_CDP_URL: http://browser:9222
       FA_HOST: "0.0.0.0"
       FA_JWT_SECRET: ${FA_JWT_SECRET:?FA_JWT_SECRET is required for non-local bind}
       FA_ADMIN_PASSWORD: ${FA_ADMIN_PASSWORD:?FA_ADMIN_PASSWORD is required for non-local bind}
+    # 应用数据保存在 compose 文件同目录下。
     volumes:
-      - app-data:/app/data
+      - ./data/app:/app/data
     depends_on:
       browser:
         condition: service_healthy
+    # 探测前端首页，避免依赖需要登录的 API。
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)\""]
       interval: 10s
@@ -29,9 +32,10 @@ services:
 
   browser:
     image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser:0.5.10}
+    # 官方镜像的 cloakserve 默认监听 9222，并默认使用无头模式。
+    command: cloakserve
     environment:
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
-      CLOAKBROWSER_CACHE_DIR: /root/.cloakbrowser
       CLOAKBROWSER_AUTO_UPDATE: ${CLOAKBROWSER_AUTO_UPDATE:-true}
       CLOAKBROWSER_RELEASE_CHANNEL: ${CLOAKBROWSER_RELEASE_CHANNEL:-stable}
       CLOAKBROWSER_VERSION: ${CLOAKBROWSER_VERSION:-}
@@ -41,30 +45,15 @@ services:
       CLOAKBROWSER_WIDEVINE: ${CLOAKBROWSER_WIDEVINE:-1}
       CLOAKBROWSER_FETCH_WIDEVINE: ${CLOAKBROWSER_FETCH_WIDEVINE:-0}
       CLOAKBROWSER_WIDEVINE_CDM: ${CLOAKBROWSER_WIDEVINE_CDM:-}
-      CLOAKSERVE_PORT: ${CLOAKSERVE_PORT:-9222}
+      # 官方 cloakserve 支持该环境变量；0 表示不自动清理空闲会话。
       CLOAKSERVE_IDLE_TIMEOUT: ${CLOAKSERVE_IDLE_TIMEOUT:-0}
-      CLOAKSERVE_EXTRA_ARGS: ${CLOAKSERVE_EXTRA_ARGS:-}
-    # cloakserve defaults to headless; --headless=false renders through Xvfb.
-    command:
-      - /bin/sh
-      - -c
-      - >-
-        exec cloakserve --port="$${CLOAKSERVE_PORT:-9222}"
-        --data-dir=/data/cloakserve
-        --idle-timeout="$${CLOAKSERVE_IDLE_TIMEOUT:-0}"
-        $${CLOAKSERVE_EXTRA_ARGS:-}
-    volumes:
-      - cloakbrowser-cache:/root/.cloakbrowser
-      - cloakbrowser-data:/data/cloakserve
+    # 仅映射到本机，避免 CDP 暴露到局域网。
+    ports:
+      - "127.0.0.1:9222:9222"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:$${CLOAKSERVE_PORT:-9222}/\" >/dev/null"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
+      interval: 30s
       timeout: 5s
-      retries: 12
+      retries: 3
       start_period: 10s
     restart: unless-stopped
-
-volumes:
-  app-data:
-  cloakbrowser-cache:
-  cloakbrowser-data:
