@@ -254,6 +254,22 @@ class SessionLimitError(RuntimeError):
 # endpoint but no revoke, so the strongest force-release we can do locally is:
 # gracefully close every CloakBrowser session we own, then poll the server
 # until seats free up (bounded wait covering the zombie TTL).
+async def close_protected(closer) -> None:
+    """Close a browser even when the calling task is being cancelled."""
+    close_task = asyncio.create_task(closer())
+    current = asyncio.current_task()
+    try:
+        await asyncio.shield(close_task)
+    except asyncio.CancelledError:
+        if current is not None:
+            current.uncancel()
+        try:
+            await close_task
+        except asyncio.CancelledError:
+            pass
+        raise
+
+
 _SEAT_POLL_INTERVAL = 5.0     # s between server seat checks
 _SEAT_WAIT_TIMEOUT = 180.0    # s max wait for zombie seats to expire
 
@@ -393,9 +409,6 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     headless = browser_mode != "headed"
 
     key = profile_key or uuid.uuid4().hex
-    user_data_dir = config.BROWSER_PROFILES_DIR / key
-    user_data_dir.mkdir(parents=True, exist_ok=True)
-
     cdp_url = (await settings.get("cloak_cdp_url") or "").strip()
     errors: list[str] = []
 
@@ -419,15 +432,30 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     if cdp_url:
         try:
             closer, ctx, engine = await _launch_cloakserve(cdp_url, fp, ctx_kwargs, proxy_server)
+            if not _ctx_is_alive(ctx):
+                # A remote license kill can leave the CDP handshake successful
+                # but return an empty context; avoid treating it as usable.
+                with contextlib.suppress(Exception):
+                    await closer()
+                raise SessionLimitError(session_limit_message())
             closer = _wrap_closer(closer, key)
             _ACTIVE_LOCAL_PROFILES.add(key)
             return closer, ctx, engine, json.dumps(fp, ensure_ascii=False)
+        except SessionLimitError:
+            raise
         except Exception as e:
-            errors.append(str(e))
+            # CDP is an explicit deployment choice. Falling back to local SDK
+            # would consume another plan seat and ignore remote headed mode.
+            detail = _engine_last_error or str(e)
+            raise RuntimeError(f"CloakBrowser CDP 启动失败: {detail}") from e
 
-    # 2) cloakbrowser SDK async
-    if HAS_CLOAK and HAS_CLOAK_ASYNC:
-        try:
+    key = profile_key or uuid.uuid4().hex
+    user_data_dir = config.BROWSER_PROFILES_DIR / key
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Local engines are only available when no CDP endpoint is configured.
+    try:
+        if HAS_CLOAK and HAS_CLOAK_ASYNC:
             closer, ctx = await _launch_cloak_sdk(cmd_args, ctx_kwargs, headless,
                                                   user_data_dir, proxy_server)
             if not _ctx_is_alive(ctx):
@@ -442,12 +470,12 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
             closer = _wrap_closer(closer, key)
             _ACTIVE_LOCAL_PROFILES.add(key)
             return closer, ctx, "cloakbrowser", json.dumps(fp, ensure_ascii=False)
-        except SessionLimitError:
-            raise
-        except Exception as e:
-            errors.append(str(e))
+    except SessionLimitError:
+        raise
+    except Exception as e:
+        errors.append(str(e))
 
-    # 3) Playwright fallback
+    # Playwright fallback is still limited to explicit local mode.
     try:
         closer, ctx = await _launch_playwright(cmd_args, ctx_kwargs, headless,
                                                user_data_dir, proxy_server)

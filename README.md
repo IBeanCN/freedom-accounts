@@ -34,7 +34,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ### 启用 CloakBrowser（推荐）
 
-**方式 A：cloakserve 远程 CDP（服务器部署推荐，引擎优先级最高）**
+**方式 A：cloakserve 远程 CDP（服务器部署推荐；与本地引擎互斥）**
 
 ```bash
 docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser cloakserve
@@ -59,8 +59,7 @@ SDK 已装入项目 venv（cloakbrowser 0.5.10），隐身 Chromium 二进制（
 > macOS 首次运行如被 Gatekeeper 拦截：右键 Chromium.app → 打开（仅一次）。
 
 - Wrapper 免费（MIT）；新版二进制需免费 GitHub Key（1 并发）或 Pro Key（多并发）。
-- 引擎选择优先级：cloakserve CDP > 本地 cloakbrowser SDK > Playwright 降级。
-- 未安装 cloakbrowser 时自动降级 Playwright Chromium + 上下文级伪装（UA/时区/语言/视口 + `--fingerprint-*` 参数透传，反检测能力弱于源码级方案）。
+- 引擎选择是互斥模式：配置 CDP 时只使用 cloakserve CDP，失败不会降级本地 SDK/Playwright；CDP 留空时才使用本地 cloakbrowser SDK，未安装 SDK 时降级 Playwright Chromium + 上下文级伪装（UA/时区/语言/视口 + `--fingerprint-*` 参数透传，反检测能力弱于源码级方案）。
 - 强防护站点（DataDome/Turnstile）建议**有头模式**运行。
 
 ## 适配器协议
