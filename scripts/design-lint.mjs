@@ -303,6 +303,7 @@ const API_ALLOWLIST = [
   "/api/accounts/:id/enabled",
   "/api/accounts/:id/fp-check",
   "/api/accounts/start",
+  "/api/accounts/:id/stop",
   "/api/accounts/:id/refresh-token",
   "/api/accounts/batch-delete",
   "/api/accounts/:id/regenerate-fingerprint",

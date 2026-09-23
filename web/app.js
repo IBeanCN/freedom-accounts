@@ -214,8 +214,8 @@ $("#dlg-confirm").addEventListener("close", () => settleConfirm(false));
    状态徽标
    ========================================================================== */
 
-/* accounts.last_status: never|queued|running|token_queued|token_running|success|failed
-   tasks.status:        pending|queued|running|success|failed|callback_failed */
+/* accounts.last_status: never|queued|running|token_queued|token_running|success|failed|cancelled
+   tasks.status:        pending|queued|running|success|failed|callback_failed|cancelled */
 const STATUS_MAP = {
   success: { label: "已完成", cls: "chip-success" },
   failed: { label: "失败", cls: "chip-danger" },
@@ -226,6 +226,7 @@ const STATUS_MAP = {
   token_running: { label: "正在刷新Token", cls: "chip-info" },
   pending: { label: "排队中", cls: "chip-warning" },
   never: { label: "未运行", cls: "chip-muted" },
+  cancelled: { label: "已停止", cls: "chip-muted" },
 };
 
 const BUSY_ACCOUNT_STATUSES = new Set([
@@ -1063,6 +1064,7 @@ function accountRow(a, gid) {
   const on = !!a.enabled;
   const busy = isAccountBusy(a);
   const tokenBusy = a.last_status === "token_queued" || a.last_status === "token_running";
+  const loginBusy = a.last_status === "queued" || a.last_status === "running";
   tr.classList.toggle("is-disabled", !on);
   tr.classList.toggle("is-selected", state.selectedAccounts.has(String(a.id)));
   const proxyName = a.proxy_name
@@ -1099,6 +1101,7 @@ function accountRow(a, gid) {
         <button class="link-btn" type="button" data-act="fp" ${busy ? "disabled" : ""}>换指纹</button>
         <button class="link-btn" type="button" data-act="refresh-token" ${busy ? "disabled" : ""}>${tokenBusy ? "刷新中…" : "刷新Token"}</button>
         <button class="link-btn" type="button" data-act="fpcheck" ${busy || a.fp_check_result === "检测中" ? "disabled" : ""}>${a.fp_check_result === "检测中" ? "检测中…" : "指纹检测"}</button>
+        ${loginBusy ? `<button class="link-btn" type="button" data-act="stop">停止</button>` : ""}
         <button class="link-btn" type="button" data-act="log">日志</button>` : `<span class="chip chip-warning">已停用</span>`}
         <button class="link-btn" type="button" data-act="edit">编辑</button>
         <button class="link-btn is-danger" type="button" data-act="del" ${busy ? "disabled" : ""}>删除</button>
@@ -1122,6 +1125,7 @@ function accountRow(a, gid) {
       if (busy) return toast("账号正在运行或排队，请稍后再试", true);
       return accountRun(a);
     }
+    if (act === "stop") return stopAccountRun(a, gid);
     if (act === "edit") return openAccountModal(a);
     if (act === "fp") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
@@ -1184,6 +1188,23 @@ async function accountRun(a) {
     const d = await api("/api/accounts/start", { method: "POST", body: { account_ids: [a.id] } });
     toast(`任务已入队（${d.queued}）`);
     setTimeout(() => loadAccounts(state.currentGroup), 1000);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function stopAccountRun(a, gid) {
+  const queued = a.last_status === "queued";
+  const ok = await confirmDialog({
+    title: `停止上号：${a.username}`,
+    message: queued
+      ? "该账号仍在队列中，停止后会直接从队列移除。"
+      : "该账号正在上号，停止后会中断后续流程并关闭指纹浏览器。",
+    okText: "停止",
+  });
+  if (!ok) return;
+  try {
+    const d = await api(`/api/accounts/${a.id}/stop`, { method: "POST" });
+    toast(d.action === "queued_removed" ? "已从队列移除" : "上号任务已停止");
+    await loadAccounts(gid);
   } catch (e) { toast(e.message, true); }
 }
 

@@ -133,6 +133,7 @@
 | `token_running` | 正在刷新Token | `chip-info` | 强调蓝 |
 | `success` | 已完成 | `chip-success` | 绿 |
 | `failed` | 失败 | `chip-danger` | 红 |
+| `cancelled` | 已停止 | `chip-muted` | 中性灰 |
 
 **上游账号状态（`accounts.remote_status`，适配器已转中文，仅展示、不影响本地 enabled）**
 
@@ -156,6 +157,7 @@
 | `success` | 已完成 | `chip-success` | 绿 |
 | `failed` | 失败 | `chip-danger` | 红 |
 | `callback_failed` | 回调失败 | `chip-danger` | 红 |
+| `cancelled` | 已停止 | `chip-muted` | 中性灰 |
 
 > `operation=token_refresh` 的 `queued` / `running` 由 `taskStatusChip()` 显示为「刷新Token队列中」/「正在刷新Token」；其他任务显示上号语义。账号侧四种运行态统一禁用重复操作按钮。
 
@@ -676,6 +678,10 @@ toast("密码不能为空", true);    // 错误
 ### 11.5 账号添加弹窗（2026-09-22）
 
 添加账号复用 `.segmented` 切换「单个添加」与「批量添加」，批量输入使用既有 `.textarea`，每行格式为 `邮箱|密码|2FA密钥`（2FA 可选）。同分组重复账号由后端跳过；批量输入中的重复行直接去重，结果文案区分新增与跳过数量。浏览器模式、代理和指纹配置收进「分组默认环境」折叠区；折叠区未修改时分别提交 `inherit`、`null` 和 `{}`，由后端按分组浏览器模式、分组代理和分组指纹模板落库。账号表单不展示代理可选项，仅以徽标显示「跟随分组代理」或已有账号代理；编辑时原样保留既有 `proxy_id`，不提供账号级修改入口。
+
+### 11.6 上号停止（2026-09-23）
+
+账号行在上号队列中或上号中显示既有 `.link-btn`「停止」入口，二次确认后调用 `/api/accounts/:id/stop`。队列中直接移除；上号中由后端中断后续流程、关闭指纹浏览器后返回。结果复用既有账号/任务状态徽标，新增 `cancelled` 显示为「已停止」。
 
 ---
 

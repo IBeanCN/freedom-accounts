@@ -33,14 +33,21 @@ services:
 
   browser:
     image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser:0.5.10}
-    # 官方镜像的 cloakserve 默认监听 9222，并默认使用无头模式。
-    command: cloakserve
+    # 官方镜像的 cloakserve 默认监听 9222；启动前显式更新，避免镜像里的二进制落后。
+    command: >-
+      sh -lc 'case "${CLOAKBROWSER_AUTO_UPDATE:-true}" in
+        [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]|1)
+          cloakbrowser update || echo "[cloakbrowser] update failed; starting current binary" >&2
+          ;;
+      esac;
+      exec cloakserve'
     environment:
       CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY:-}
       CLOAKBROWSER_AUTO_UPDATE: ${CLOAKBROWSER_AUTO_UPDATE:-true}
       CLOAKBROWSER_RELEASE_CHANNEL: ${CLOAKBROWSER_RELEASE_CHANNEL:-stable}
       CLOAKBROWSER_VERSION: ${CLOAKBROWSER_VERSION:-}
-      CLOAKBROWSER_DOWNLOAD_URL: ${CLOAKBROWSER_DOWNLOAD_URL:-https://cloakbrowser.dev}
+      # 非空会禁用 Pro license 下载路径；留空才使用官方默认下载源。
+      CLOAKBROWSER_DOWNLOAD_URL: ${CLOAKBROWSER_DOWNLOAD_URL:-}
       CLOAKBROWSER_SKIP_CHECKSUM: ${CLOAKBROWSER_SKIP_CHECKSUM:-false}
       CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS: ${CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS:-5}
       CLOAKBROWSER_WIDEVINE: ${CLOAKBROWSER_WIDEVINE:-1}
@@ -56,5 +63,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 5m
     restart: unless-stopped

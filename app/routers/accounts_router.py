@@ -259,6 +259,24 @@ async def start_accounts(body: StartBody):
     return {"ok": True, "queued": total, "blocked": blocked}
 
 
+@router.post("/{account_id}/stop")
+async def stop_account_run(account_id: int):
+    """Stop login work only; token refresh has its own lifecycle and protections."""
+    db = await database.get_db()
+    row = await db.execute("SELECT id, last_status FROM accounts WHERE id=?", (account_id,))
+    account = await row.fetchone()
+    if not account:
+        raise HTTPException(404, "account not found")
+    if account["last_status"] in ("token_queued", "token_running"):
+        raise HTTPException(409, "正在刷新 Token，暂不支持从这里停止")
+    if account["last_status"] not in ("queued", "running"):
+        raise HTTPException(409, "账号当前没有上号任务")
+    action = await scheduler.stop_account(account_id)
+    if action == "not_running":
+        raise HTTPException(409, "账号当前没有上号任务")
+    return {"ok": True, "action": action}
+
+
 @router.post("/batch-delete")
 async def batch_delete_accounts(body: BatchDeleteBody):
     """Delete selected accounts; refuse the whole batch if any one is running."""

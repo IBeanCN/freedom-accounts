@@ -80,6 +80,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/start` | 按账号批量上号（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。上号前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
+| POST | `/api/accounts/{id}/stop` | 优雅停止上号：队列中直接移除；上号中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持上号，不支持刷新 Token |
 | POST | `/api/accounts/{id}/refresh-token` | 账号级刷新 Token；要求启用、上游状态「正常」、过期时间可解析且非运行态，忽略批量用的 30 分钟窗口；成功入队后写入 `token_refresh` 任务日志 |
 | POST | `/api/accounts/batch-delete` | 批量删除选中账号；`account_ids` 必填，任一账号处于四种运行态时整批 409 拒绝 |
 | POST | `/api/accounts/{id}/regenerate-fingerprint` | 重新生成指纹；四种运行态账号 409 拒绝 |
@@ -123,7 +124,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 - 应用启动后运行内部 asyncio 定时任务：启动时先巡检一次，之后按系统设置 `token_refresh_interval_seconds` 休眠，默认 3600 秒。
 - 巡检范围是所有适配器真正实现 `refresh_token` 的分组；每组先同步上游，再复用一键批量筛选规则（启用 + 上游正常 + Token 过期时间可解析 + 剩余寿命 ≤30 分钟）。
 - 多个分组的到期账号合并为一个串行队列，账号间仍随机间隔 5–20 秒；正在刷新的账号跳过本轮。
-- 账号最新运行态包括 `never`（未运行）、`queued`（上号队列中）、`running`（正在上号）、`token_queued`（刷新 Token 队列中）、`token_running`（正在刷新 Token）、`success`（已完成）和 `failed`（失败）；四种运行态统一禁止重复上号、刷新、停用、删除、换指纹和指纹检测。
+- 账号最新运行态包括 `never`（未运行）、`queued`（上号队列中）、`running`（正在上号）、`token_queued`（刷新 Token 队列中）、`token_running`（正在刷新 Token）、`success`（已完成）、`failed`（失败）和 `cancelled`（已手动停止）；四种运行态统一禁止重复上号、刷新、停用、删除、换指纹和指纹检测。
 
 ### OpenAI 授权上号（sub2api / cpr 通用架构，2026-09-22）
 

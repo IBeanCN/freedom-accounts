@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     fp_check_at TEXT,                      -- last check timestamp
     remark TEXT NOT NULL DEFAULT '',
     last_task_id INTEGER,
-    last_status TEXT NOT NULL DEFAULT 'never', -- never|queued|running|token_queued|token_running|success|failed
+    last_status TEXT NOT NULL DEFAULT 'never', -- never|queued|running|token_queued|token_running|success|failed|cancelled
     last_message TEXT NOT NULL DEFAULT '',
     last_run_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     operation TEXT NOT NULL DEFAULT 'login', -- login|token_refresh
-    status TEXT NOT NULL DEFAULT 'pending', -- pending|queued|running|success|failed|callback_failed
+    status TEXT NOT NULL DEFAULT 'pending', -- pending|queued|running|success|failed|callback_failed|cancelled
     browser_mode TEXT NOT NULL DEFAULT '',  -- resolved mode actually used
     fingerprint_json TEXT NOT NULL DEFAULT '{}',
     steps TEXT NOT NULL DEFAULT '[]',       -- JSON log of steps

@@ -182,6 +182,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
                 break
             await asyncio.sleep(1)
         else:
+            _step(steps, "callback_timeout", page.url[:200])
             raise RuntimeError(
                 f"等待 localhost 回调超时（{CALLBACK_WAIT_SECONDS}s），最后页面: {page.url[:200]}")
 

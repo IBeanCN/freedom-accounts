@@ -28,10 +28,22 @@ _account_slots: set[int] = set()
 _running_accounts: set[int] = set()
 _account_state_lock = asyncio.Lock()
 _RUN_TASKS: set[asyncio.Task] = set()
+_RUN_TASK_BY_ACCOUNT: dict[int, asyncio.Task] = {}
+_EXECUTE_TASK_BY_ACCOUNT: dict[int, asyncio.Task] = {}
+# Queue entries carry a generation so a stopped stale item can never execute
+# after the same account is immediately queued again.
+_account_generations: dict[int, int] = {}
+# Stop marks let an ID already inside an asyncio.Queue drain lazily and give
+# the executor one deterministic cancellation boundary.
+_stop_requests: set[int] = set()
 # After a run's browser closes and result is persisted, keep its group slot
 # reserved briefly so the next queued account never reuses it immediately.
 RUN_COOLDOWN_MIN_SECONDS = 15.0
 RUN_COOLDOWN_MAX_SECONDS = 30.0
+
+
+class RunStopped(Exception):
+    """Internal signal: a cancelled login run has been persisted and cleaned up."""
 
 
 def _now() -> str:
@@ -51,9 +63,12 @@ async def enqueue(group_id: int, account_ids: list[int]) -> int:
         for aid in account_ids:
             if aid in _account_slots or aid in _running_accounts:
                 continue
+            _stop_requests.discard(aid)
             _account_slots.add(aid)
+            generation = _account_generations.get(aid, 0) + 1
+            _account_generations[aid] = generation
             queued.append(aid)
-            await g["queue"].put(aid)
+            await g["queue"].put((aid, generation))
     if queued:
         # 入队即对外可见，防止前端在任务真正启动前重复提交。
         marks = ",".join("?" * len(queued))
@@ -64,10 +79,29 @@ async def enqueue(group_id: int, account_ids: list[int]) -> int:
         return len(queued)
 
 
+async def _mark_cancelled(db, account_ids: list[int]) -> None:
+    if not account_ids:
+        return
+    marks = ",".join("?" * len(account_ids))
+    await db.execute(
+        f"""UPDATE accounts SET last_status='cancelled', last_message='已手动停止',
+            last_task_id=NULL WHERE id IN ({marks})""",
+        tuple(account_ids))
+    await db.commit()
+
+
 async def _dispatcher(group_id: int, g: dict) -> None:
     db = await database.get_db()
     while True:
-        account_id = await g["queue"].get()
+        account_id, generation = await g["queue"].get()
+        if generation != _account_generations.get(account_id):
+            continue
+        if account_id in _stop_requests:
+            async with _account_state_lock:
+                _account_slots.discard(account_id)
+            await _mark_cancelled(db, [account_id])
+            continue
+
         # read current interval config every dispatch (live-updatable)
         row = await db.execute(
             "SELECT concurrency, interval_min_ms, interval_max_ms FROM groups WHERE id=?",
@@ -79,7 +113,9 @@ async def _dispatcher(group_id: int, g: dict) -> None:
             # drain remaining queued accounts and release their slots
             while not g["queue"].empty():
                 try:
-                    remaining = g["queue"].get_nowait()
+                    remaining, remaining_generation = g["queue"].get_nowait()
+                    if remaining_generation != _account_generations.get(remaining):
+                        continue
                     async with _account_state_lock:
                         _account_slots.discard(remaining)
                 except asyncio.QueueEmpty:
@@ -95,6 +131,11 @@ async def _dispatcher(group_id: int, g: dict) -> None:
         hi = max(int(gr["interval_max_ms"] or 0), lo) / 1000.0
         if g.get("last_dispatch") is not None:
             await asyncio.sleep(random.uniform(lo, hi))
+            if account_id in _stop_requests:
+                async with _account_state_lock:
+                    _account_slots.discard(account_id)
+                await _mark_cancelled(db, [account_id])
+                continue
         g["last_dispatch"] = time.monotonic()
 
         task = asyncio.create_task(_run_one(group_id, account_id, sem))
@@ -103,15 +144,20 @@ async def _dispatcher(group_id: int, g: dict) -> None:
 
 
 async def _run_one(group_id: int, account_id: int, sem: asyncio.Semaphore) -> None:
+    task = asyncio.current_task()
     async with _account_state_lock:
         if account_id in _running_accounts:
             return
         _running_accounts.add(account_id)
+        if task is not None:
+            _RUN_TASK_BY_ACCOUNT[account_id] = task
     try:
         db = await database.get_db()
         g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
         a = await (await db.execute("SELECT * FROM accounts WHERE id=?", (account_id,))).fetchone()
         if not g or not a:
+            if account_id in _stop_requests:
+                await _mark_cancelled(db, [account_id])
             return
 
         # decrypt sensitive credentials for the flow (they are encrypted at rest)
@@ -124,36 +170,91 @@ async def _run_one(group_id: int, account_id: int, sem: asyncio.Semaphore) -> No
             group_row["upstream_key"] = crypto.decrypt(group_row["upstream_key"])
 
         async with sem:
-            await _execute(db, g, a, password=password, totp_secret=totp_secret,
-                           group_decrypted=group_row)
+            execute_task = asyncio.create_task(
+                _execute(db, g, a, password=password, totp_secret=totp_secret,
+                         group_decrypted=group_row))
+            async with _account_state_lock:
+                _EXECUTE_TASK_BY_ACCOUNT[account_id] = execute_task
+            try:
+                await asyncio.shield(execute_task)
+            except RunStopped:
+                return
+            except asyncio.CancelledError:
+                execute_task.cancel()
+                try:
+                    await execute_task
+                except asyncio.CancelledError:
+                    pass
+                return
             # Hold the semaphore while cooling down, so the next queued task
             # cannot acquire this group's concurrency slot as soon as it ends.
-            await asyncio.sleep(random.uniform(
-                RUN_COOLDOWN_MIN_SECONDS, RUN_COOLDOWN_MAX_SECONDS))
+            try:
+                await asyncio.sleep(random.uniform(
+                    RUN_COOLDOWN_MIN_SECONDS, RUN_COOLDOWN_MAX_SECONDS))
+            except asyncio.CancelledError:
+                return
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None:
+            current.uncancel()
+        # Cancellation before the executor starts must still clear queue state;
+        # app shutdown does not set a stop mark and keeps the existing restart reset.
+        if account_id in _stop_requests:
+            db = await database.get_db()
+            await _mark_cancelled(db, [account_id])
+        return
     finally:
         async with _account_state_lock:
             _account_slots.discard(account_id)
             _running_accounts.discard(account_id)
+            if _RUN_TASK_BY_ACCOUNT.get(account_id) is task:
+                _RUN_TASK_BY_ACCOUNT.pop(account_id, None)
+            _EXECUTE_TASK_BY_ACCOUNT.pop(account_id, None)
+
+
+async def _close_protected(closer) -> None:
+    """Close a browser even when the calling task is being cancelled.
+
+    A plain await in a cancellation finally can itself raise immediately and
+    leave the fingerprint-browser session open.
+    """
+    close_task = asyncio.create_task(closer())
+    current = asyncio.current_task()
+    try:
+        await asyncio.shield(close_task)
+    except asyncio.CancelledError:
+        if current is not None:
+            current.uncancel()
+        try:
+            await close_task
+        except asyncio.CancelledError:
+            pass
+        # Do not re-raise CancelledError: its pending delivery can interrupt the
+        # result persistence below. RunStopped is the executor's safe boundary.
+        raise RunStopped from None
 
 
 async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                    group_decrypted: dict | None = None) -> None:
     group_id, account_id = g["id"], a["id"]
-    cur = await db.execute(
-        "INSERT INTO tasks(group_id,account_id,status,created_at) VALUES(?,?, 'running', ?)",
-        (group_id, account_id, _now()))
-    task_id = cur.lastrowid
+    task_id = None
     started_at = _now()
-    steps: list = [{"t": _now(), "step": "task_created", "detail": f"task#{task_id}", "ok": True}]
-    await db.execute(
-        "UPDATE accounts SET last_status='running', last_task_id=?, last_run_at=? WHERE id=?",
-        (task_id, started_at, account_id))
-    await db.commit()
-
+    steps: list = []
     status, error, result_json, fp_json, mode = "failed", "", {}, "{}", ""
     engine_used = browser_mod.engine_name()
     closer = None
     try:
+        cur = await db.execute(
+            "INSERT INTO tasks(group_id,account_id,status,created_at) VALUES(?,?, 'running', ?)",
+            (group_id, account_id, _now()))
+        task_id = cur.lastrowid
+        started_at = _now()
+        steps.append({"t": _now(), "step": "task_created", "detail": f"task#{task_id}", "ok": True})
+        await db.execute(
+            "UPDATE accounts SET last_status='running', last_task_id=?, last_run_at=? WHERE id=?",
+            (task_id, started_at, account_id))
+        await db.commit()
+
         mode = await browser_mod.resolve_browser_mode(a["browser_mode"], g["browser_mode"])
         steps.append({"t": _now(), "step": "browser_mode", "detail": mode, "ok": True})
         steps.append({"t": _now(), "step": "fingerprint", "detail": "applied", "ok": True})
@@ -190,7 +291,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                                           group=group_decrypted or dict(g), account=dict(a))
         finally:
             try:
-                await closer()
+                await _close_protected(closer)
             finally:
                 steps.append({"t": _now(), "step": "browser_closed", "detail": "-", "ok": True})
         result_json = result
@@ -199,14 +300,28 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 if isinstance(result_json.get(key), str):
                     result_json[key] = redact_callback_url(result_json[key])
         status = "success"
+    except RunStopped:
+        status, error = "cancelled", "已手动停止"
+        steps.append({"t": _now(), "step": "stopped", "detail": "已手动停止", "ok": False})
     except Exception as e:
         error = str(e)
         status = "failed"
         if closer is not None:
             try:
-                await closer()
+                await _close_protected(closer)
             except Exception:
                 pass
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None:
+            current.uncancel()
+        if task_id is None:
+            await _mark_cancelled(db, [account_id])
+            return
+        status, error = "cancelled", "已手动停止"
+        steps.append({"t": _now(), "step": "stopped", "detail": "已手动停止", "ok": False})
+    finally:
+        _stop_requests.discard(account_id)
     steps.append({"t": _now(), "step": "finished", "detail": status, "ok": status == "success"})
 
     # NOTE: upstream callbacks used to be posted here via groups.callback_url.
@@ -223,6 +338,8 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
          json.dumps(result_json, ensure_ascii=False), fp_json, mode,
          callback_status, callback_response, started_at, _now(), task_id))
     msg = error or (result_json.get("note", "") if isinstance(result_json, dict) else "")
+    if status == "cancelled":
+        msg = "已手动停止"
     await db.execute("UPDATE accounts SET last_status=?, last_message=? WHERE id=?",
                      (status, str(msg)[:300], account_id))
     await db.commit()
@@ -239,3 +356,43 @@ async def shutdown() -> None:
         task.cancel()
     if dispatchers or _RUN_TASKS:
         await asyncio.gather(*dispatchers, *_RUN_TASKS, return_exceptions=True)
+
+
+async def stop_account(account_id: int) -> str:
+    """Gracefully remove queued work or cancel the live login run.
+
+    A running cancellation is awaited so the browser close is complete before
+    the API response reaches the UI.
+    """
+    async with _account_state_lock:
+        task = _RUN_TASK_BY_ACCOUNT.get(account_id)
+        execute_task = _EXECUTE_TASK_BY_ACCOUNT.get(account_id)
+        is_queued = account_id in _account_slots and account_id not in _running_accounts
+        if not is_queued and task is None:
+            return "not_running"
+        _stop_requests.add(account_id)
+
+    cancel_task = execute_task or task
+    if cancel_task is not None and not cancel_task.done():
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            pass
+        return "stopped"
+
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # _run_one suppresses its own graceful-stop boundary after cleanup.
+            pass
+        return "stopped"
+
+    db = await database.get_db()
+    async with _account_state_lock:
+        _account_slots.discard(account_id)
+        _account_generations[account_id] = _account_generations.get(account_id, 0) + 1
+    await _mark_cancelled(db, [account_id])
+    return "queued_removed"
