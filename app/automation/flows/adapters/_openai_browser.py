@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 from ._util import now, totp_code
 
-CALLBACK_WAIT_SECONDS = 300      # 等 localhost 回调总时长（与插件一致）
+CALLBACK_WAIT_SECONDS = 120      # 等 localhost 回调总时长
 CALLBACK_HOSTS = ("localhost", "127.0.0.1")
 
 # 页面选择器（与插件 PAGE_STEP_FUNCS 保持一致）
@@ -73,7 +73,7 @@ async def _fill_first(page, selector: str, value: str, attempts: int = 5) -> boo
                 return True
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await _sleep(5, 10)
     return False
 
 
@@ -86,7 +86,7 @@ async def _click_continue(page, attempts: int = 5) -> bool:
                 return True
         except Exception:
             pass
-        await asyncio.sleep(1)
+        await _sleep(5, 10)
     return False
 
 
@@ -114,8 +114,9 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     _step(steps, "goto", page.url)
 
     # 3) 填邮箱 -> Continue
-    await _sleep(5)
+    await _sleep(5, 10)
     if await _fill_first(page, SEL_EMAIL, email):
+        await _sleep(3, 8)
         await _click_continue(page)
         _step(steps, "fill_email", email)
     else:
@@ -124,8 +125,9 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     # 4) 填密码 -> Continue
     if not (password or "").strip():
         raise RuntimeError("账号未配置密码，无法自动完成授权")
-    await _sleep(5)
+    await _sleep(5, 10)
     if await _fill_first(page, SEL_PASSWORD, password):
+        await _sleep(3, 8)
         await _click_continue(page)
         _step(steps, "fill_password", "***")
     else:
@@ -148,7 +150,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
         if not otp:
             raise RuntimeError("页面要求 2FA 但账号未配置 TOTP 密钥")
         await totp_input.first.fill(otp)
-        await _sleep(5, 10)
+        await _sleep(3, 8)
         await _click_continue(page)
         _step(steps, "fill_2fa", "已填写 TOTP 验证码")
     else:
@@ -160,7 +162,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     # 瞬间就拿到完整 URL。不能只轮询 page.url —— 回调地址（如 localhost:1455）
     # 本机通常没有服务监听，导航会失败并被 Chrome 替换成网络错误页
     # chrome-error://chromewebdata/，page.url 从此不再是 localhost，
-    # 轮询会白等 300s 超时（真实事故：task#8，fill_2fa 后卡满 5 分钟）。
+    # 轮询会白等 CALLBACK_WAIT_SECONDS 超时（真实事故：task#8，fill_2fa 后卡满 5 分钟）。
     captured: dict = {}
 
     def _on_request(req):

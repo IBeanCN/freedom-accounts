@@ -343,8 +343,22 @@ async def fp_check(account_id: int):
     url = await fpcheck.account_check_url(account_id)
     if not url:
         raise HTTPException(400, fpcheck.NO_URL_MSG)
+    if fpcheck.is_account_check_running(account_id):
+        raise HTTPException(409, "指纹检测正在执行，请先停止或等待完成")
     fpcheck.start_check(account_id)
     return {"ok": True, "status": "检测中"}
+
+
+@router.post("/{account_id}/fp-check/stop")
+async def stop_fp_check(account_id: int):
+    """Stop a live fingerprint check, or clear its stale checking marker."""
+    db = await database.get_db()
+    row = await db.execute("SELECT id FROM accounts WHERE id=?", (account_id,))
+    if not await row.fetchone():
+        raise HTTPException(404, "account not found")
+    if not await fpcheck.stop_account_check(account_id):
+        raise HTTPException(409, "指纹检测未在执行")
+    return {"ok": True, "status": fpcheck.STOP_RESULT}
 
 
 @router.post("/{account_id}/refresh-token")

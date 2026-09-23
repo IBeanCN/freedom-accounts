@@ -76,6 +76,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | POST | `/api/groups/{id}/sync-accounts` | 同步上游账号，身份键=上游 `remote_id`：已存在→仅更新上游字段（username 显示名取 email、`remote_status`/`remote_remark` 独立列；密码/2FA/指纹/代理等本地属性不动）；上游没有的 synced 行删除；新增按分组指纹模板落库；与上游账号（email/用户名）重复的本地账号全部停用（body 可选 `dry_run`，返回含 `disabled` 计数）。上游状态由适配器转中文（normal/quota_exhausted/rate_limited/disabled/error/refresh_backoff → 正常/配额耗尽/限流中/已停用/错误/退避中），仅展示、不影响本地 enabled |
 | POST | `/api/groups/{id}/refresh-tokens` | 一键刷新 Token；先同步上游，再按 `account_ids`（空/缺省=全部）筛选启用且上游状态「正常」的账号。批量只处理 Token 已可解析、剩余寿命 ≤30 分钟且非四种运行态的账号，账号间随机间隔 5–20 秒；全局只允许一个 Token 刷新队列，执行过程写入 `operation=token_refresh` 任务日志并回写 `token_refresh_result` / `token_refresh_at` / 新过期时间 |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
+| POST | `/api/groups/{id}/fp-check/stop` | 停止分组指纹模板检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
 | GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组代理和分组指纹模板） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
@@ -85,6 +86,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | POST | `/api/accounts/batch-delete` | 批量删除选中账号；`account_ids` 必填，任一账号处于四种运行态时整批 409 拒绝 |
 | POST | `/api/accounts/{id}/regenerate-fingerprint` | 重新生成指纹；四种运行态账号 409 拒绝 |
 | POST | `/api/accounts/{id}/fp-check` | 触发指纹检测（后台浏览器打开检测站→点 #retest→读 #risk-badge/#score-value，结果写回 `fp_check_result`，形如 高风险/80）；四种运行态账号 409 拒绝；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
+| POST | `/api/accounts/{id}/fp-check/stop` | 停止账号指纹检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
 | GET | `/api/accounts/{id}/tasks` | 该账号的任务记录 |
 | GET | `/api/tasks` | 任务列表（`?status=` `?limit=`） |
 | GET | `/api/tasks/{id}` | 任务详情 |
@@ -130,7 +132,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，执行任务时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
 
-- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等）→ 持续点 Continue → 轮询等 localhost 回调（300s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
 - **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键执行；CPR 请求授权链接时省略 `accountId`。
 - **执行冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。
 - **上游差异只在凭证操作**：

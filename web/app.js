@@ -36,6 +36,7 @@ const state = {
   accountSort: { field: null, dir: "asc" }, // 账号表排序：field = 列 data-sort 值，dir = asc|desc
   selectedAccounts: new Set(), // 当前分组勾选的账号 ID；批量操作按此过滤
   accountAutoRefreshTimer: null, // 账号列表自动刷新定时器；null 表示当前未排队
+  fpStopPending: new Set(), // 指纹检测停止请求进行中，按钮立即给出反馈
 };
 
 /* ==========================================================================
@@ -138,6 +139,7 @@ $("#theme-btn").addEventListener("click", () => {
    ========================================================================== */
 
 function showLogin() {
+  resetAccountAutoRefresh();
   $("#view-main").classList.add("hidden");
   $("#view-login").classList.remove("hidden");
 }
@@ -157,6 +159,7 @@ const TAB_META = {
 };
 
 function switchTab(tab) {
+  resetAccountAutoRefresh();
   state.tab = tab;
   $$(".rail-item").forEach((b) => b.classList.toggle("is-active", b.dataset.tab === tab));
   $$(".page").forEach((p) => p.classList.toggle("hidden", p.id !== `tab-${tab}`));
@@ -366,6 +369,7 @@ function groupCard(g) {
   const running = (g.running_count || 0) > 0;
   const initial = (g.name || "·").trim().charAt(0).toUpperCase();
   const checking = (g.fp_check_result || "") === "检测中";
+  const stoppingCheck = state.fpStopPending.has(`g${g.id}`);
   el.innerHTML = `
     <div class="group-head">
       <span class="group-avatar" aria-hidden="true">${esc(initial)}</span>
@@ -389,7 +393,10 @@ function groupCard(g) {
       <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="open-browser">打开浏览器</button>
       <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="close-browser">关闭浏览器</button>
       <button class="btn btn-secondary btn-sm" type="button" data-act="sync">同步账号</button>
-      <button class="btn btn-secondary btn-sm" type="button" data-act="fpcheck" ${checking ? "disabled" : ""}>${checking ? "检测中…" : "指纹检测"}</button>
+      ${checking || stoppingCheck
+        ? `<button class="btn btn-secondary btn-sm" type="button" data-act="fpcheck-stop"
+            ${stoppingCheck ? "disabled" : ""}>${stoppingCheck ? "停止中…" : "停止检测"}</button>`
+        : `<button class="btn btn-secondary btn-sm" type="button" data-act="fpcheck">指纹检测</button>`}
       <button class="btn btn-secondary btn-sm" type="button" data-act="edit">编辑</button>
       <button class="btn btn-secondary btn-sm is-danger" type="button" data-act="del">删除</button>
     </div>`;
@@ -401,6 +408,11 @@ function groupCard(g) {
     if (act === "close-browser") { e.stopPropagation(); return groupCloseBrowser(g); }
     if (act === "sync") { e.stopPropagation(); return groupSync(g); }
     if (act === "fpcheck") { e.stopPropagation(); return groupFpCheck(g); }
+    if (act === "fpcheck-stop") {
+      e.stopPropagation();
+      if (!state.fpStopPending.has(`g${g.id}`)) return stopGroupFpCheck(g);
+      return;
+    }
     if (act === "edit") { e.stopPropagation(); return openGroupModal(g); }
     if (act === "del") { e.stopPropagation(); return groupDelete(g); }
     if (act === "toggle") {
@@ -444,6 +456,7 @@ function groupRiskDot(g) {
   if (!v) return "";
   const at = g.fp_check_at ? `模板检测于 ${g.fp_check_at}` : "";
   if (v === "检测中") return `<span class="fp-badge fp-badge-info" title="指纹模板检测中"></span>`;
+  if (v === "已停止") return `<span class="fp-badge fp-badge-muted" title="指纹模板检测已停止"></span>`;
   if (v.startsWith("失败")) return `<span class="fp-badge fp-badge-muted" title="${esc(v)}"></span>`;
   const [risk, score] = v.split("/");
   const level = fpLevel(risk);
@@ -461,6 +474,23 @@ async function groupFpCheck(g) {
   } catch (e) { toast(e.message, true); }
 }
 
+async function stopGroupFpCheck(g) {
+  const key = `g${g.id}`;
+  if (state.fpStopPending.has(key)) return;
+  state.fpStopPending.add(key);
+  toast(`分组 ${g.name} 正在停止检测…`);
+  renderGroups();
+  try {
+    await api(`/api/groups/${g.id}/fp-check/stop`, { method: "POST" });
+    toast(`分组 ${g.name} 的指纹模板检测已停止`);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    state.fpStopPending.delete(key);
+    await loadGroups();
+  }
+}
+
 function pollGroupFpCheck(gid, tried) {
   if (tried >= 60) return;               // ~3 分钟后放弃轮询
   setTimeout(async () => {
@@ -474,7 +504,8 @@ function pollGroupFpCheck(gid, tried) {
         return pollGroupFpCheck(gid, tried + 1);
       }
       const v = (grp.fp_check_result || "").trim();
-      if (v) toast(v.startsWith("失败") ? "指纹模板检测失败" : `模板检测结果：${v}`);
+      if (v === "已停止") toast("指纹模板检测已停止");
+      else if (v) toast(v.startsWith("失败") ? "指纹模板检测失败" : `模板检测结果：${v}`);
     } catch (_) { /* 网络抖动继续 */ }
   }, 3000);
 }
@@ -514,7 +545,7 @@ async function selectGroup(id) {
 }
 
 function closeAccountsPanel() {
-  stopAccountAutoRefresh();
+  resetAccountAutoRefresh();
   state.currentGroup = null;
   state.accounts = [];
   state.selectedAccounts.clear();
@@ -952,6 +983,12 @@ function stopAccountAutoRefresh() {
   state.accountAutoRefreshTimer = null;
 }
 
+function resetAccountAutoRefresh() {
+  stopAccountAutoRefresh();
+  // 自动刷新是一次性辅助操作：离开当前账号视图后必须重新手动开启。
+  $("#account-auto-refresh").value = "";
+}
+
 function scheduleAccountAutoRefresh() {
   stopAccountAutoRefresh();
   const seconds = +$("#account-auto-refresh").value;
@@ -1065,6 +1102,8 @@ function accountRow(a, gid) {
   const busy = isAccountBusy(a);
   const tokenBusy = a.last_status === "token_queued" || a.last_status === "token_running";
   const loginBusy = a.last_status === "queued" || a.last_status === "running";
+  const fpChecking = a.fp_check_result === "检测中";
+  const stoppingCheck = state.fpStopPending.has(`a${a.id}`);
   tr.classList.toggle("is-disabled", !on);
   tr.classList.toggle("is-selected", state.selectedAccounts.has(String(a.id)));
   const proxyName = a.proxy_name
@@ -1100,7 +1139,10 @@ function accountRow(a, gid) {
         ${on ? `<button class="link-btn" type="button" data-act="run" ${busy ? "disabled" : ""}>${a.last_status === "running" ? "执行中…" : busy ? "队列中…" : "执行"}</button>
         <button class="link-btn" type="button" data-act="fp" ${busy ? "disabled" : ""}>换指纹</button>
         <button class="link-btn" type="button" data-act="refresh-token" ${busy ? "disabled" : ""}>${tokenBusy ? "刷新中…" : "刷新Token"}</button>
-        <button class="link-btn" type="button" data-act="fpcheck" ${busy || a.fp_check_result === "检测中" ? "disabled" : ""}>${a.fp_check_result === "检测中" ? "检测中…" : "指纹检测"}</button>
+        ${fpChecking || stoppingCheck
+          ? `<button class="link-btn" type="button" data-act="fpcheck-stop"
+              ${stoppingCheck ? "disabled" : ""}>${stoppingCheck ? "停止中…" : "停止检测"}</button>`
+          : `<button class="link-btn" type="button" data-act="fpcheck" ${busy ? "disabled" : ""}>指纹检测</button>`}
         ${loginBusy ? `<button class="link-btn" type="button" data-act="stop">停止</button>` : ""}
         <button class="link-btn" type="button" data-act="log">日志</button>` : `<span class="chip chip-warning">已停用</span>`}
         <button class="link-btn" type="button" data-act="edit">编辑</button>
@@ -1141,6 +1183,10 @@ function accountRow(a, gid) {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
       if (busy) return toast("账号正在运行或排队，请稍后再试", true);
       return startFpCheck(a, gid);
+    }
+    if (act === "fpcheck-stop") {
+      if (!state.fpStopPending.has(`a${a.id}`)) return stopFpCheck(a, gid);
+      return;
     }
     if (act === "log") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
@@ -1325,6 +1371,7 @@ function fpBadge(v, at) {
   v = (v || "").trim();
   if (!v) return '<span class="cell-muted">未检测</span>';
   if (v === "检测中") return '<span class="chip chip-info"><span class="chip-dot"></span>检测中</span>';
+  if (v === "已停止") return '<span class="chip chip-muted">已停止</span>';
   if (v.startsWith("失败")) return `<span class="chip chip-muted" title="${esc(v)}">${esc(v.slice(0, 14))}</span>`;
   const [risk, score] = v.split("/");
   const level = fpLevel(risk);
@@ -1359,10 +1406,30 @@ function pollFpCheck(accountId, gid, tried = 0) {
       const a = state.accounts.find((x) => x.id === accountId);
       if (a && a.fp_check_result === "检测中") return pollFpCheck(accountId, gid, tried + 1);
       await loadAccounts(gid);
-      if (a) toast(a.fp_check_result.startsWith("失败")
-        ? "指纹检测失败" : `检测结果：${a.fp_check_result}`);
+      if (a) {
+        if (a.fp_check_result === "已停止") toast("指纹检测已停止");
+        else toast(a.fp_check_result.startsWith("失败")
+          ? "指纹检测失败" : `检测结果：${a.fp_check_result}`);
+      }
     } catch (_) { /* 网络抖动时继续下一轮 */ }
   }, 3000);
+}
+
+async function stopFpCheck(a, gid) {
+  const key = `a${a.id}`;
+  if (state.fpStopPending.has(key)) return;
+  state.fpStopPending.add(key);
+  toast(`账号 ${a.username} 正在停止检测…`);
+  await loadAccounts(gid);
+  try {
+    await api(`/api/accounts/${a.id}/fp-check/stop`, { method: "POST" });
+    toast(`账号 ${a.username} 的指纹检测已停止`);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    state.fpStopPending.delete(key);
+    await loadAccounts(gid);
+  }
 }
 
 /* ---------- 账号表单 ---------- */
@@ -2350,6 +2417,7 @@ $("#logout-btn").addEventListener("click", async () => {
 
 (async function boot() {
   applyTheme(document.documentElement.getAttribute("data-theme") || "light", false);
+  resetAccountAutoRefresh();
   // 登录态保存在 HttpOnly Cookie；刷新后内存 TOKEN 丢失也必须先用 Cookie 恢复。
   try {
     await api("/api/auth/me");

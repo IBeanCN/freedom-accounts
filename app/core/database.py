@@ -189,6 +189,14 @@ async def init_db() -> None:
         await db.execute("ALTER TABLE groups ADD COLUMN fp_check_result TEXT NOT NULL DEFAULT ''")
     if "fp_check_at" not in gcols:
         await db.execute("ALTER TABLE groups ADD COLUMN fp_check_at TEXT")
+    # Background checks do not survive a restart; clear their marker so the
+    # start action is not permanently disabled by a stale row.
+    await db.execute(
+        """UPDATE accounts SET fp_check_result='失败: 服务重启中断'
+           WHERE fp_check_result='检测中'""")
+    await db.execute(
+        """UPDATE groups SET fp_check_result='失败: 服务重启中断'
+           WHERE fp_check_result='检测中'""")
     if "proxy_id" not in gcols:
         await db.execute("ALTER TABLE groups ADD COLUMN proxy_id INTEGER")
     # adapter_logs may be missing on databases created before it existed

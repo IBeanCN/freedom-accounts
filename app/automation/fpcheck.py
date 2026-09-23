@@ -28,6 +28,16 @@ DETECT_TIMEOUT = 120     # s — max wait for the badge to leave 检测中
 
 # both the group override and the system setting are empty => refuse to run
 NO_URL_MSG = "未配置指纹检测地址，请先在「系统设置 → 指纹检测站点」填写，或在分组编辑中单独配置"
+STOP_RESULT = "已停止"
+
+# Status is persisted as a row field for display, but the live task registry is
+# the source of truth for cancellation (first retry attempts can save errors).
+_account_checks: dict[int, asyncio.Task] = {}
+_group_checks: dict[int, asyncio.Task] = {}
+# A launcher may not own its closer until launch returns; stop waits for this
+# boundary instead of injecting cancellation into engine startup.
+_account_check_launching: set[int] = set()
+_group_check_launching: set[int] = set()
 
 # CloakBrowser Pro plan caps concurrent live sessions; an over-cap launch may
 # complete the CDP handshake and THEN be killed by the license guard (exit 76),
@@ -56,6 +66,33 @@ def _is_session_killed(msg: str) -> bool:
     return any(mark.lower() in m for mark in _TARGET_CLOSED_MARKS)
 
 _sem = asyncio.Semaphore(1)   # CloakBrowser plan caps live sessions; keep 1 seat spare for manual browser
+
+
+async def _launch_check_browser(guard: set[int], key: int, fp: dict, mode: str,
+                                profile_key: str, proxy_server: str):
+    """Launch a check browser with seat recovery at cancellation-safe phases.
+
+    Waiting for a license seat is safe to cancel. Only the actual engine launch
+    is guarded: stopping waits there until launch returns and a closer exists.
+    """
+    await browser_mod.acquire_seat()
+
+    async def launch_once():
+        guard.add(key)
+        try:
+            return await browser_mod.launch_for_account(
+                fp, mode, profile_key=profile_key, proxy_server=proxy_server)
+        finally:
+            guard.discard(key)
+
+    try:
+        return await launch_once()
+    except browser_mod.SessionLimitError:
+        await browser_mod.reclaim_manual_sessions()
+        if not await browser_mod.force_free_seats():
+            raise browser_mod.SessionLimitError(
+                browser_mod.session_limit_message())
+        return await launch_once()
 
 
 async def resolve_check_url(group_row: dict | None) -> str | None:
@@ -96,6 +133,40 @@ async def save_result(account_id: int, result: str) -> None:
         "UPDATE accounts SET fp_check_result=?, fp_check_at="
         "datetime('now','localtime') WHERE id=?", (result[:100], account_id))
     await db.commit()
+
+
+def is_account_check_running(account_id: int) -> bool:
+    task = _account_checks.get(account_id)
+    return bool(task and not task.done())
+
+
+async def stop_account_check(account_id: int) -> bool:
+    """Cancel a live check, or clear the status left by an earlier abnormal run."""
+    task = _account_checks.pop(account_id, None)
+    if task is not None and not task.done():
+        while account_id in _account_check_launching:
+            await asyncio.sleep(0.05)
+        if task.done():
+            return (await _clear_stale_account_result(account_id))
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await save_result(account_id, STOP_RESULT)
+        return True
+
+    return await _clear_stale_account_result(account_id)
+
+
+async def _clear_stale_account_result(account_id: int) -> bool:
+    db = await database.get_db()
+    row = await (await db.execute(
+        "SELECT fp_check_result FROM accounts WHERE id=?", (account_id,))).fetchone()
+    if row and (row["fp_check_result"] or "") == "检测中":
+        await save_result(account_id, STOP_RESULT)
+        return True
+    return False
 
 
 async def _goto_check_page(page, url: str, proxy_server: str) -> None:
@@ -155,16 +226,17 @@ async def _run_check_once(a, g, url: str, mode: str) -> tuple[bool, dict]:
     """One attempt: launch -> goto -> detect -> read. Returns (ok, payload)."""
     import json
     account_id = a["id"]
+    profile_key = f"g{a['group_id']}_a{account_id}_fpcheck"
     async with _sem:
         closer = None
         try:
             proxy_server = await browser_mod.resolve_proxy(
                 a["proxy_id"] if "proxy_id" in a.keys() else None,
                 g["proxy_id"] if "proxy_id" in g.keys() else None)
-            closer, ctx, engine, _ = await browser_mod.launch_with_autocleanup(
+            closer, ctx, engine, _ = await _launch_check_browser(
+                _account_check_launching, account_id,
                 json.loads(a["fingerprint"] or "{}"), mode,
-                profile_key=f"g{a['group_id']}_a{account_id}_fpcheck",
-                proxy_server=proxy_server)
+                profile_key, proxy_server)
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await _goto_check_page(page, url, proxy_server)
             await _click_retest(page)
@@ -176,8 +248,7 @@ async def _run_check_once(a, g, url: str, mode: str) -> tuple[bool, dict]:
             return False, {"ok": False, "error": str(e)}
         finally:
             if closer is not None:
-                with contextlib.suppress(Exception):
-                    await closer()
+                await browser_mod.close_protected(closer, profile_key=profile_key)
 
 
 async def run_check(account_id: int) -> dict:
@@ -211,7 +282,18 @@ async def run_check(account_id: int) -> dict:
 
 def start_check(account_id: int) -> asyncio.Task:
     """Fire-and-forget background check (used by the API endpoint)."""
-    return tasks.spawn(run_check(account_id))
+    existing = _account_checks.get(account_id)
+    if existing and not existing.done():
+        return existing
+    task = tasks.spawn(run_check(account_id))
+    _account_checks[account_id] = task
+
+    def _discard(done: asyncio.Task) -> None:
+        if _account_checks.get(account_id) is done:
+            _account_checks.pop(account_id, None)
+
+    task.add_done_callback(_discard)
+    return task
 
 
 # ---------------- group template check ----------------
@@ -235,17 +317,52 @@ async def save_group_result(group_id: int, result: str) -> None:
     await db.commit()
 
 
+def is_group_check_running(group_id: int) -> bool:
+    task = _group_checks.get(group_id)
+    return bool(task and not task.done())
+
+
+async def stop_group_check(group_id: int) -> bool:
+    """Cancel a live template check, or clear its stale checking status."""
+    task = _group_checks.pop(group_id, None)
+    if task is not None and not task.done():
+        while group_id in _group_check_launching:
+            await asyncio.sleep(0.05)
+        if task.done():
+            return (await _clear_stale_group_result(group_id))
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await save_group_result(group_id, STOP_RESULT)
+        return True
+
+    return await _clear_stale_group_result(group_id)
+
+
+async def _clear_stale_group_result(group_id: int) -> bool:
+    db = await database.get_db()
+    row = await (await db.execute(
+        "SELECT fp_check_result FROM groups WHERE id=?", (group_id,))).fetchone()
+    if row and (row["fp_check_result"] or "") == "检测中":
+        await save_group_result(group_id, STOP_RESULT)
+        return True
+    return False
+
+
 async def _run_group_check_once(g, url: str, fp: dict, mode: str) -> tuple[bool, dict]:
     """One attempt for the group template check."""
     group_id = g["id"]
+    profile_key = f"g{group_id}_tplcheck"
     async with _sem:
         closer = None
         try:
             proxy_server = await browser_mod.resolve_proxy(
                 None, g["proxy_id"] if "proxy_id" in g.keys() else None)
-            closer, ctx, engine, _ = await browser_mod.launch_with_autocleanup(
-                fp, mode, profile_key=f"g{group_id}_tplcheck",
-                proxy_server=proxy_server)
+            closer, ctx, engine, _ = await _launch_check_browser(
+                _group_check_launching, group_id, fp, mode,
+                profile_key, proxy_server)
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await _goto_check_page(page, url, proxy_server)
             await _click_retest(page)
@@ -257,8 +374,7 @@ async def _run_group_check_once(g, url: str, fp: dict, mode: str) -> tuple[bool,
             return False, {"ok": False, "error": str(e)}
         finally:
             if closer is not None:
-                with contextlib.suppress(Exception):
-                    await closer()
+                await browser_mod.close_protected(closer, profile_key=profile_key)
 
 
 async def run_group_check(group_id: int) -> dict:
@@ -297,5 +413,27 @@ async def run_group_check(group_id: int) -> dict:
 
 def start_group_check(group_id: int) -> dict:
     """Fire-and-forget template check (used by the API endpoint)."""
-    tasks.spawn(run_group_check(group_id))
+    existing = _group_checks.get(group_id)
+    if existing and not existing.done():
+        return {"ok": True, "group_id": group_id, "already_running": True}
+    task = tasks.spawn(run_group_check(group_id))
+    _group_checks[group_id] = task
+
+    def _discard(done: asyncio.Task) -> None:
+        if _group_checks.get(group_id) is done:
+            _group_checks.pop(group_id, None)
+
+    task.add_done_callback(_discard)
     return {"ok": True, "group_id": group_id}
+
+
+async def shutdown_checks() -> None:
+    """Cancel checks at a safe boundary so their browsers still close."""
+    while _account_check_launching or _group_check_launching:
+        await asyncio.sleep(0.05)
+    tasks = [task for task in (*_account_checks.values(), *_group_checks.values())
+             if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

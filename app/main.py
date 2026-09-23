@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .core import database, settings, maintenance, tasks
-from .automation import browser, scheduler, token_refresh
+from .automation import browser, fpcheck, scheduler, token_refresh
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
     yield
     pruner.cancel()
     token_refresher.cancel()
+    await fpcheck.shutdown_checks()
     await tasks.cancel_all()
     await scheduler.shutdown()
     await browser.close_all_managed_sessions()

@@ -553,9 +553,21 @@ async def fp_check_group(group_id: int):
     # gate: refuse to start when no check URL is configured (group > setting)
     if not (await fpcheck.resolve_check_url(g)):
         raise HTTPException(400, fpcheck.NO_URL_MSG)
-    if (g["fp_check_result"] or "") == "检测中":
+    if fpcheck.is_group_check_running(group_id):
         return {"ok": True, "already_running": True}
     return fpcheck.start_group_check(group_id)
+
+
+@router.post("/{group_id}/fp-check/stop")
+async def stop_fp_check_group(group_id: int):
+    """Stop a live template check, or clear its stale checking marker."""
+    db = await database.get_db()
+    row = await db.execute("SELECT id FROM groups WHERE id=?", (group_id,))
+    if not await row.fetchone():
+        raise HTTPException(404, "group not found")
+    if not await fpcheck.stop_group_check(group_id):
+        raise HTTPException(409, "指纹模板检测未在执行")
+    return {"ok": True, "status": fpcheck.STOP_RESULT}
 
 
 @router.post("/{group_id}/open-browser")

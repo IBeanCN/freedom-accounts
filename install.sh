@@ -12,7 +12,7 @@ ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
 DATA_DIR="$SCRIPT_DIR/data"
 DEFAULT_LISTEN_IP="127.0.0.1"
 DEFAULT_PORT="8080"
-DEFAULT_IMAGE="cloakhq/cloakbrowser:0.5.10"
+DEFAULT_IMAGE="cloakhq/cloakbrowser:latest"
 
 fail() {
   echo "错误: $*" >&2

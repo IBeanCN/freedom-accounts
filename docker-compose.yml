@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   browser:
-    image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser:0.5.10}
+    image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser:latest}
     # 官方镜像的 cloakserve 默认监听 9222；启动前显式更新，避免镜像里的二进制落后。
     command: >-
       sh -lc 'if [ -z "${CLOAKBROWSER_DOWNLOAD_URL:-}" ]; then
