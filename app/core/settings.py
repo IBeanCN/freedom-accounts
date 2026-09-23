@@ -6,6 +6,7 @@ SETTING_DEFAULTS = {
     "global_browser_mode": "headless",  # headless | headed
     "cloak_cdp_url": "",                # cloakserve CDP endpoint, e.g. http://127.0.0.1:9222
     "log_retention_days": "3",          # adapter_logs & task logs older than this are pruned
+    "token_refresh_interval_seconds": "3600", # scheduled upstream token refresh interval
     "fp_check_url": "https://fuck-claude.com/zh/",  # fingerprint risk-check site; group may override
     # global geo defaults: prefilled into the proxy form when "自定义时区位置"
     # is switched on; manually editable or auto-filled from exit-IP lookup

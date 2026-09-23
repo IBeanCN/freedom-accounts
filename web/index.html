@@ -147,11 +147,21 @@
 
         <section id="accounts-panel" class="card panel hidden">
           <header class="panel-head">
-            <h2 class="panel-title" id="accounts-title">账号</h2>
-            <span class="chip chip-plain" id="accounts-count">0 个账号</span>
-            <button id="btn-group-start" class="btn btn-primary btn-sm" type="button">一键上号（全部账号）</button>
+            <div class="panel-title-row">
+              <h2 class="panel-title" id="accounts-title">账号</h2>
+              <label class="auto-refresh-label" for="account-auto-refresh">自动刷新</label>
+              <select id="account-auto-refresh" class="select select-sm">
+                <option value="">关闭</option>
+                <option value="5">5秒</option>
+                <option value="10">10秒</option>
+                <option value="15">15秒</option>
+                <option value="30">30秒</option>
+              </select>
+            </div>
             <button id="btn-new-account" class="btn btn-secondary btn-sm" type="button">添加账号</button>
+            <button id="btn-group-start" class="btn btn-secondary btn-sm" type="button">一键上号（ALL）</button>
             <button id="btn-batch-fp" class="btn btn-secondary btn-sm" type="button">批量换指纹</button>
+            <button id="btn-batch-refresh-token" class="btn btn-secondary btn-sm" type="button">一键刷新Token</button>
             <button id="btn-batch-delete" class="btn btn-secondary is-danger btn-sm" type="button" disabled>删除账号</button>
             <button id="btn-close-accounts" class="btn btn-text" type="button">收起</button>
           </header>
@@ -198,14 +208,14 @@
           <div class="metric-divider"></div>
           <div class="metric">
             <span class="metric-value" id="t-running">0</span>
-            <span class="metric-label">运行中</span>
+            <span class="metric-label">进行中</span>
           </div>
         </div>
 
         <div class="segmented" id="task-filter" role="group" aria-label="任务状态筛选">
           <button class="segmented-item is-active" type="button" data-status="">全部</button>
           <button class="segmented-item" type="button" data-status="running">运行中</button>
-          <button class="segmented-item" type="button" data-status="success">成功</button>
+          <button class="segmented-item" type="button" data-status="success">已完成</button>
           <button class="segmented-item" type="button" data-status="failed">失败</button>
         </div>
 
@@ -428,6 +438,23 @@
               </div>
             </div>
 
+            <div class="setting-card">
+              <div class="setting-head">
+                <h3 class="setting-title">Token 自动刷新</h3>
+                <p class="setting-desc">按固定间隔对所有支持刷新的分组执行一键刷新规则。</p>
+              </div>
+              <div class="setting-body">
+                <label class="field field-narrow">
+                  <span class="field-label">执行间隔（60–2592000 秒）</span>
+                  <input id="token-refresh-interval" class="input" type="number" min="60" max="2592000" value="3600">
+                  <span class="field-hint">默认 3600 秒（1 小时），修改后在下一轮生效</span>
+                </label>
+              </div>
+              <div class="setting-foot">
+                <button id="btn-save-token-refresh" class="btn btn-primary btn-sm" type="button">保存</button>
+              </div>
+            </div>
+
           </div>
         </section>
 
@@ -600,11 +627,17 @@
   <form id="form-account" method="dialog">
     <div class="dlg-head">
       <h3 class="dlg-title" id="dlg-account-title">添加账号</h3>
-      <p class="dlg-sub">账号密码 + 可选 2FA + 浏览器指纹；密码保存后不再回显。</p>
+      <p class="dlg-sub">单条输入或批量粘贴；环境配置留空时继承分组默认。</p>
     </div>
     <div class="dlg-body">
+      <div class="segmented" id="account-mode-seg" role="group" aria-label="账号添加方式">
+        <button class="segmented-item is-active" type="button" data-mode="single">单个添加</button>
+        <button class="segmented-item" type="button" data-mode="bulk">批量添加</button>
+      </div>
+
       <div class="form-section">
-        <span class="form-section-title">基础信息</span>
+        <span class="form-section-title" id="account-input-title">账号信息</span>
+        <div id="account-single-fields">
         <div class="field-row">
           <label class="field">
             <span class="field-label">账号 *</span>
@@ -620,39 +653,58 @@
             <span class="field-label">2FA 密钥（TOTP base32，可选）</span>
             <input id="a-totp" class="input" placeholder="JBSWY3DPEHPK3PXP">
           </label>
+        </div>
+        </div>
+        <div id="account-bulk-fields" class="hidden">
           <label class="field">
-            <span class="field-label">浏览器模式</span>
-            <select id="a-browser_mode" class="select">
-              <option value="inherit">跟随分组 / 系统</option>
-              <option value="headless">无头</option>
-              <option value="headed">有头</option>
+            <span class="field-label">批量账号 *</span>
+            <textarea id="a-bulk" class="textarea" rows="8" required
+              placeholder="email@example.com|password|JBSWY3DPEHPK3PXP&#10;email2@example.com|password"></textarea>
+            <span class="field-hint">每行一个账号，格式：邮箱|密码|2FA密钥。2FA 密钥可选。</span>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">备注</span>
+            <input id="a-remark" class="input" placeholder="可选，用于人工区分账号用途">
+          </label>
+          <label class="field">
+            <span class="field-label">账号状态</span>
+            <select id="a-enabled" class="select">
+              <option value="1">启用</option>
+              <option value="0">停用（仅允许编辑 / 删除）</option>
             </select>
           </label>
         </div>
-        <label class="field">
-          <span class="field-label">备注</span>
-          <input id="a-remark" class="input" placeholder="可选，用于人工区分账号用途">
-        </label>
-        <label class="field">
-          <span class="field-label">关联代理（优先于分组代理）</span>
-          <select id="a-proxy_id" class="select">
-            <option value="">不使用代理（直连）</option>
-          </select>
-          <span class="field-hint">留空时使用分组配置的代理；可在「代理管理」中维护</span>
-        </label>
-        <label class="check-field">
-          <input id="a-enabled" class="checkbox" type="checkbox" checked>
-          <span>启用账号（停用后仅允许编辑 / 删除，禁止上号等一切操作）</span>
-        </label>
       </div>
 
       <fieldset class="fieldset">
         <div class="fieldset-head">
-          <span class="fieldset-title">指纹配置</span>
-          <span class="fieldset-hint">留空自动生成随机指纹</span>
+          <span class="fieldset-title">分组默认环境</span>
+          <span class="fieldset-hint">留空按分组设置保存</span>
+          <button id="btn-toggle-account-env" class="btn btn-text btn-sm" type="button" aria-expanded="false">展开</button>
+        </div>
+        <div id="account-env-fields" class="hidden">
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">浏览器模式</span>
+              <select id="a-browser_mode" class="select">
+                <option value="inherit">跟随分组 / 系统</option>
+                <option value="headless">无头</option>
+                <option value="headed">有头</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">关联代理</span>
+              <span id="a-proxy-summary" class="chip chip-muted">跟随分组代理</span>
+            </label>
+          </div>
+          <div class="form-section">
+            <span class="form-section-title">指纹配置</span>
+            <span class="fieldset-hint">留空按分组指纹模板生成，无模板则随机</span>
           <button id="btn-regen-fp" class="btn btn-secondary btn-sm" type="button">随机生成</button>
           <button id="btn-fp-geo" class="btn btn-secondary btn-sm" type="button">回填时区</button>
-        </div>
+          </div>
         <div class="field-row">
           <label class="field">
             <span class="field-label">种子 seed</span>
@@ -717,6 +769,7 @@
             </select>
             <span class="field-hint">厂商随 GPU 机型自动写入</span>
           </label>
+        </div>
         </div>
       </fieldset>
     </div>

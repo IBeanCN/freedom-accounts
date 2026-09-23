@@ -100,13 +100,7 @@ data/         platform.db 与浏览器 profile
 
 ## 自定义登录流程
 
-通用流程按常见选择器自动填写表单。若目标站点特殊，在 `app/automation/flows/registry.py` 注册：
-
-```python
-from .adapters.my_adapter import MyAdapter
-
-ADAPTERS = [PasswordAdapter, Sub2ApiAdapter, CprAdapter, MyAdapter]
-```
+若目标站点需要新流程，在 `app/automation/flows/registry.py` 注册适配器，并把它追加到 `ADAPTERS`。当前内置类型为 `sub2api` 和 `cpr`。
 
 ## ⚠️ 使用边界
 

@@ -1,4 +1,5 @@
 """Groups router: CRUD + start batch login."""
+import logging
 import json
 from typing import Optional
 
@@ -10,18 +11,20 @@ from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
-from ..automation.flows import validate_login_type, get_adapter, requires_openai_credentials
+from ..automation import token_refresh
+from ..automation.flows import validate_login_type, get_adapter
 from ..automation.platforms import is_known_group_type
-from ..automation.flows.adapters._util import translate_remote_status
+from ..automation.flows.adapters._util import totp_code, translate_remote_status
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_admin)])
+_log = logging.getLogger("groups.token_refresh")
 
 
 class GroupBody(BaseModel):
     group_type: str = Field(min_length=1, description="platform key from /api/meta, e.g. OpenAI-openai")
     name: str = Field(min_length=1)
-    login_type: str = Field(min_length=1, description="flow adapter key: password | sub2api | cpr")
+    login_type: str = Field(min_length=1, description="flow adapter key: sub2api | cpr")
     login_url: str = Field(min_length=1, description="upstream base URL, used by the adapter")
     upstream_key: str = Field(default="", description="upstream auth key, adapter-internal")
     # legacy columns kept in DB for backward compatibility; no longer accepted
@@ -43,6 +46,68 @@ class GroupBody(BaseModel):
 
 class StartBody(BaseModel):
     account_ids: Optional[list[int]] = None   # empty/None => all accounts in group
+
+
+def _has_valid_totp(encrypted_secret: str) -> bool:
+    """Run-time TOTP precheck; an empty secret remains optional and never enters here."""
+    try:
+        return totp_code(crypto.decrypt(encrypted_secret)) is not None
+    except Exception:
+        return False
+
+
+class RefreshTokensBody(BaseModel):
+    """Batch refresh selected upstream accounts (empty/None => whole group)."""
+    account_ids: Optional[list[int]] = None
+
+
+async def _collect_group_refresh_candidates(g, selected_ids: list[int] | None = None):
+    """Sync upstream rows, then select enabled normal accounts inside 30 minutes.
+
+    Shared by the one-click endpoint and the scheduled sweep so both use the
+    same expiry/status gates.
+    """
+    db = await database.get_db()
+    adapter = get_adapter(g["login_type"])()
+    if not token_refresh.adapter_supports_refresh(adapter):
+        raise HTTPException(400, f"登录类型 {g['login_type']} 不支持刷新 Token")
+
+    # Sync first so the 30-minute decision uses upstream status/expiry, not a stale row.
+    adapter_group = dict(g)
+    if adapter_group.get("upstream_key"):
+        adapter_group["upstream_key"] = crypto.decrypt(adapter_group["upstream_key"])
+    try:
+        remote = await adapter.list_accounts(adapter_group)
+        await _apply_remote_sync(db, dict(g), remote)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"同步上游账号失败: {e}")
+
+    selected_ids = list(dict.fromkeys(selected_ids or []))
+    params: list = [g["id"]]
+    where = ("WHERE group_id=? AND enabled=1 AND remote_status='正常' "
+             "AND token_expires_at != '' "
+             "AND last_status NOT IN ('queued','running','token_queued','token_running')")
+    if selected_ids:
+        where += f" AND id IN ({','.join('?' * len(selected_ids))})"
+        params.extend(selected_ids)
+    rows = await db.execute(
+        f"""SELECT id, username, remote_status, token_expires_at,
+                   token_refresh_result FROM accounts {where} ORDER BY id""",
+        tuple(params))
+    rows = await rows.fetchall()
+
+    candidates: list = []
+    skipped_window = skipped_invalid = 0
+    for row in rows:
+        if token_refresh.can_refresh(row):
+            candidates.append(row)
+        elif not token_refresh.has_valid_expiry(row):
+            skipped_invalid += 1
+        else:
+            skipped_window += 1
+    return candidates, skipped_window, skipped_invalid, len(selected_ids)
 
 
 async def _apply_remote_sync(db, group_row, remote_data: dict) -> dict:
@@ -93,23 +158,25 @@ async def _apply_remote_sync(db, group_row, remote_data: dict) -> dict:
                      or translate_remote_status(it.get("status"))
                      or "").strip()
         up_remark = str(it.get("remark") or "").strip()
+        token_expires_at = str(it.get("access_token_expires_at")
+                               or it.get("token_expires_at") or "").strip()
         row = local_by_rid.get(rid)
         if row is not None:
             await db.execute(
                 """UPDATE accounts SET username=?, remote_status=?,
-                   remote_remark=? WHERE id=?""",
+                   remote_remark=?, token_expires_at=? WHERE id=?""",
                 (display or row["username"], status or row["remote_status"],
-                 up_remark, row["id"]))
+                 up_remark, token_expires_at or row["token_expires_at"], row["id"]))
             updated += 1
         else:
             fp = fp_mod.generate_from_template(template) if has_tpl \
                 else fp_mod.generate_fingerprint()
             await db.execute(
                 """INSERT INTO accounts(group_id,username,password,fingerprint,
-                   remote_id,remote_status,remote_remark)
-                   VALUES(?,?,?,?,?,?,?)""",
+                   remote_id,remote_status,remote_remark,token_expires_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (group_id, display or rid, "", json.dumps(fp, ensure_ascii=False),
-                 rid, status, up_remark))
+                 rid, status, up_remark, token_expires_at))
             created += 1
 
     # step 3) disable duplicates after final display usernames are known.
@@ -258,7 +325,8 @@ async def regenerate_fingerprints(group_id: int, body: RegenFpBody):
         raise HTTPException(404, "group not found")
     selected_ids = list(dict.fromkeys(body.account_ids or []))
     params: list = [group_id]
-    where = "WHERE group_id=?"
+    where = ("WHERE group_id=? AND last_status NOT IN "
+             "('queued','running','token_queued','token_running')")
     if selected_ids:
         where += f" AND id IN ({','.join('?' * len(selected_ids))})"
         params.extend(selected_ids)
@@ -330,10 +398,13 @@ async def start_group(group_id: int, body: StartBody):
     except Exception as e:
         raise HTTPException(502, f"同步上游账号失败: {e}")
 
-    # step 2) filter: only enabled accounts with remote_status='error'
+    # Manual rows have no remote_id and therefore no upstream status; they are
+    # still valid CPR OAuth candidates. Sync keeps such local-only rows intact.
     selected_ids = list(dict.fromkeys(body.account_ids or []))
     params: list = [group_id]
-    where = "WHERE group_id=? AND enabled=1 AND remote_status='error'"
+    where = ("WHERE group_id=? AND enabled=1 "
+             "AND (remote_status IN ('error', '错误') "
+             "OR COALESCE(remote_id, '')='')")
     if selected_ids:
         where += f" AND id IN ({','.join('?' * len(selected_ids))})"
         params.extend(selected_ids)
@@ -343,20 +414,22 @@ async def start_group(group_id: int, body: StartBody):
         tuple(params))
     error_accounts = await rows.fetchall()
 
-    if error_accounts and requires_openai_credentials(g["login_type"]):
+    if error_accounts:
         missing = [
             f"#{r['id']} {r['username']}"
             + ("（缺密码）" if not r["password"] else "")
-            + ("（缺2FA）" if not r["totp_secret"] else "")
-            for r in error_accounts if not r["password"] or not r["totp_secret"]
+            + ("（2FA密钥无效）" if r["totp_secret"] and not _has_valid_totp(r["totp_secret"]) else "")
+            for r in error_accounts
+            if not r["password"]
+            or (r["totp_secret"] and not _has_valid_totp(r["totp_secret"]))
         ]
         if missing:
             raise HTTPException(
-                400, "以下账号未配置密码或2FA，请先编辑账号: " + "、".join(missing))
+                400, "以下账号未配置密码，或2FA密钥无效（2FA可选）: " + "、".join(missing))
 
     if not error_accounts:
         return {"ok": True, "queued": 0, "error_count": 0, "sync": sync_result,
-                "message": "同步完成，没有上游状态为「错误」的启用账号，无需上号"}
+                "message": "同步完成，没有上游状态为「错误」或本地手动新增的启用账号，无需上号"}
 
     # step 3) enqueue only the error accounts
     error_ids = [r["id"] for r in error_accounts]
@@ -403,6 +476,67 @@ async def sync_accounts(group_id: int, body: SyncBody):
 
     counts = await _apply_remote_sync(db, dict(g), remote)
     return {"ok": True, "dry_run": body.dry_run, **counts}
+
+
+@router.post("/{group_id}/refresh-tokens")
+async def refresh_tokens(group_id: int, body: RefreshTokensBody):
+    """Refresh expiring upstream tokens; candidates are selected after a sync."""
+    db = await database.get_db()
+    g = await (await db.execute("SELECT * FROM groups WHERE id=?", (group_id,))).fetchone()
+    if not g:
+        raise HTTPException(404, "group not found")
+
+    (candidates, skipped_window, skipped_invalid,
+     selected_count) = await _collect_group_refresh_candidates(
+        g, body.account_ids)
+    candidate_ids = [row["id"] for row in candidates]
+    if not candidate_ids:
+        return {"ok": True, "queued": 0, "skipped_window": skipped_window,
+                "skipped_invalid": skipped_invalid, "selected_count": len(selected_ids),
+                "message": "没有需要刷新 Token 的启用账号"}
+    if token_refresh.any_refreshing(candidate_ids):
+        raise HTTPException(409, "所选账号正在刷新 Token，请稍后再试")
+
+    if not await token_refresh.queue_refresh(candidate_ids):
+        raise HTTPException(409, "已有 Token 刷新队列正在执行，请稍后再试")
+    return {"ok": True, "queued": len(candidate_ids),
+            "skipped_window": skipped_window, "skipped_invalid": skipped_invalid,
+            "selected_count": selected_count,
+            "accounts": [{"id": row["id"], "username": row["username"]}
+                         for row in candidates]}
+
+
+async def run_due_token_refresh():
+    """Scheduled sweep: apply the batch rule to every refresh-capable group."""
+    db = await database.get_db()
+    groups = await (await db.execute("SELECT * FROM groups ORDER BY id")).fetchall()
+    all_candidates = []
+    for g in groups:
+        try:
+            candidates, _, _, _ = await _collect_group_refresh_candidates(g)
+        except HTTPException as e:
+            if token_refresh.adapter_supports_refresh(get_adapter(g["login_type"])()):
+                _log.warning("group %s token sweep failed: %s", g["id"], e.detail)
+            continue
+        except Exception as e:
+            _log.warning("group %s token sweep failed: %s", g["id"], e)
+            continue
+        ids = [row["id"] for row in candidates]
+        # Keep IDs globally unique so one scheduled run remains one serial queue.
+        if ids and not token_refresh.any_refreshing(ids) \
+                and not set(ids).intersection(row["id"] for row in all_candidates):
+            all_candidates.extend(candidates)
+
+    if not all_candidates:
+        return {"queued": 0}
+    ids = [row["id"] for row in all_candidates]
+    if token_refresh.any_refreshing(ids):
+        return {"queued": 0}
+    if not await token_refresh.queue_refresh(ids):
+        _log.info("scheduled token refresh skipped: another queue is active")
+        return {"queued": 0}
+    _log.info("scheduled token refresh queued: %s account(s)", len(ids))
+    return {"queued": len(ids)}
 
 
 @router.post("/{group_id}/fp-check")

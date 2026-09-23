@@ -376,7 +376,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     """Launch a browser for one account.
 
     Returns (closer, context, engine_used, fingerprint_json).
-    All contexts are native async Playwright objects; flows use run_login_async.
+    All contexts are native async Playwright objects; flows expose async run_* methods.
     ``proxy_server`` (scheme://[user:pass@]host:port) routes ALL browser traffic
     through that proxy when non-empty; empty string = direct connection.
     """

@@ -18,7 +18,7 @@ Upstream wire contract (verified against the codex-proxy-rs source):
   - POST   {base}/api/admin/accounts/refresh                     → data.{account, result?, error?}
            body: {"accountId":<id>}
 
-五个凭证操作不在页面暴露，仅写 adapter_logs。
+五个凭证操作只写 adapter_logs；refresh_token 可由账号页面 API 触发，其余仍为内部调用。
 """
 import httpx
 
@@ -180,6 +180,7 @@ class CprAdapter(FlowAdapter):
                      "status_label": translate_remote_status(it.get("status")),
                      "enabled": it.get("enabled"),
                      "plan_type": it.get("planType"),
+                     "access_token_expires_at": it.get("accessTokenExpiresAt"),
                      "remark": it.get("remark") or it.get("note") or ""}
                     for it in items],
             }
@@ -252,13 +253,17 @@ class CprAdapter(FlowAdapter):
         try:
             data = await _api_call(group, "POST", "/api/admin/accounts/refresh",
                                    json_body={"accountId": remote_account_id})
-            result = {"account_id": (data.get("account") or {}).get("accountId")
+            account = data.get("account") or {}
+            result = {"account_id": account.get("accountId")
                       or remote_account_id,
+                      "access_token_expires_at": account.get("accessTokenExpiresAt"),
+                      "status_label": translate_remote_status(account.get("status")),
                       "result": data.get("result"),
                       "error": data.get("error")}
             ok = not result["error"]
             await log_action(group["id"], self.key, "refresh_token", ok,
-                             f"accountId={remote_account_id} result={result['result']} err={result['error']}")
+                             f"accountId={remote_account_id} result={result['result']} "
+                             f"expiresAt={result['access_token_expires_at']} err={result['error']}")
             return result
         except Exception as e:
             await log_action(group["id"], self.key, "refresh_token", False,

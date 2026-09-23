@@ -23,6 +23,7 @@ const state = {
   currentGroup: null,
   editingGroup: null,
   editingAccount: null,
+  accountModalMode: "single",
   taskFilter: "",
   meta: { login_types: [], group_types: [] },
   proxies: [],
@@ -34,6 +35,7 @@ const state = {
   localEngine: true,         // 未配置 cloakserve CDP（本地 SDK 引擎）；「打开浏览器」按钮的渲染依据
   accountSort: { field: null, dir: "asc" }, // 账号表排序：field = 列 data-sort 值，dir = asc|desc
   selectedAccounts: new Set(), // 当前分组勾选的账号 ID；批量操作按此过滤
+  accountAutoRefreshTimer: null, // 账号列表自动刷新定时器；null 表示当前未排队
 };
 
 /* ==========================================================================
@@ -162,6 +164,8 @@ function switchTab(tab) {
   const meta = TAB_META[tab] || { title: "", sub: "" };
   $("#page-title").textContent = meta.title;
   $("#page-sub").textContent = meta.sub;
+  if (tab === "groups") scheduleAccountAutoRefresh();
+  else stopAccountAutoRefresh();
   if (tab === "tasks") loadTasks();
   if (tab === "proxies") loadProxies();
   if (tab === "settings") loadSettings();
@@ -210,16 +214,34 @@ $("#dlg-confirm").addEventListener("close", () => settleConfirm(false));
    状态徽标
    ========================================================================== */
 
-/* accounts.last_status: never|running|success|failed
-   tasks.status:        pending|running|success|failed|callback_failed */
+/* accounts.last_status: never|queued|running|token_queued|token_running|success|failed
+   tasks.status:        pending|queued|running|success|failed|callback_failed */
 const STATUS_MAP = {
-  success: { label: "成功", cls: "chip-success" },
+  success: { label: "已完成", cls: "chip-success" },
   failed: { label: "失败", cls: "chip-danger" },
   callback_failed: { label: "回调失败", cls: "chip-danger" },
-  running: { label: "运行中", cls: "chip-info" },
+  queued: { label: "上号队列中", cls: "chip-warning" },
+  running: { label: "正在上号", cls: "chip-info" },
+  token_queued: { label: "刷新Token队列中", cls: "chip-warning" },
+  token_running: { label: "正在刷新Token", cls: "chip-info" },
   pending: { label: "排队中", cls: "chip-warning" },
   never: { label: "未运行", cls: "chip-muted" },
 };
+
+const BUSY_ACCOUNT_STATUSES = new Set([
+  "queued", "running", "token_queued", "token_running",
+]);
+
+function isAccountBusy(a) {
+  return BUSY_ACCOUNT_STATUSES.has(a?.last_status);
+}
+
+function taskStatusChip(t) {
+  if (t.operation === "token_refresh" && (t.status === "queued" || t.status === "running")) {
+    return statusChip(`token_${t.status}`);
+  }
+  return statusChip(t.status);
+}
 
 function statusChip(s) {
   const m = STATUS_MAP[s] || { label: s || "未知", cls: "chip-muted" };
@@ -260,7 +282,9 @@ function callbackChip(s) {
    ========================================================================== */
 
 async function loadAll() {
-  await Promise.all([loadGroups(), loadEngine(), loadMeta(), loadProxiesSilent()]);
+  // 分组卡片会展示注册表 label，必须先加载 meta，避免首屏短暂显示原始 key。
+  await Promise.all([loadMeta(), loadEngine(), loadProxiesSilent()]);
+  await loadGroups();
   if (state.currentGroup && state.groups.some((g) => String(g.id) === String(state.currentGroup))) {
     await loadAccounts(state.currentGroup);
   } else if (state.currentGroup) {
@@ -298,10 +322,10 @@ function fillSelect(sel, items, placeholder) {
   });
 }
 
-/* 上号类型 key -> 显示名（未注册的存量值原样显示） */
+/* 上号类型 key -> 卡片短名（未注册的存量值原样显示；括号内的引擎说明不下沉到卡片） */
 function loginTypeLabel(key) {
   const a = state.meta.login_types.find((x) => x.key === key);
-  return a ? a.label : (key || "—");
+  return a ? (a.label.split(/[（(]/)[0].trim() || key) : (key || "—");
 }
 
 /* 分组类型 key -> 显示名 */
@@ -489,6 +513,7 @@ async function selectGroup(id) {
 }
 
 function closeAccountsPanel() {
+  stopAccountAutoRefresh();
   state.currentGroup = null;
   state.accounts = [];
   state.selectedAccounts.clear();
@@ -918,8 +943,38 @@ async function loadAccounts(gid) {
   state.selectedAccounts = new Set(
     [...state.selectedAccounts].filter((id) => state.accounts.some((a) => String(a.id) === String(id))));
   renderAccountRows();
-  $("#accounts-count").textContent = `${state.accounts.length} 个账号`;
+  scheduleAccountAutoRefresh();
 }
+
+function stopAccountAutoRefresh() {
+  clearTimeout(state.accountAutoRefreshTimer);
+  state.accountAutoRefreshTimer = null;
+}
+
+function scheduleAccountAutoRefresh() {
+  stopAccountAutoRefresh();
+  const seconds = +$("#account-auto-refresh").value;
+  const canRun = seconds > 0
+    && state.tab === "groups"
+    && state.currentGroup != null
+    && !$("#accounts-panel").classList.contains("hidden")
+    && !$("#view-main").classList.contains("hidden");
+  if (!canRun) return;
+
+  state.accountAutoRefreshTimer = setTimeout(async () => {
+    state.accountAutoRefreshTimer = null;
+    const gid = state.currentGroup;
+    try {
+      await loadAccounts(gid);
+    } catch (e) {
+      // 刷新失败不能让列表静默停在旧数据；登录失效时不再继续后台轮询。
+      toast(e.message, true);
+      scheduleAccountAutoRefresh();
+    }
+  }, seconds * 1000);
+}
+
+$("#account-auto-refresh").addEventListener("change", scheduleAccountAutoRefresh);
 
 /** Sort accounts by the active sort field; Chinese-safe localeCompare for text fields. */
 function sortAccounts(accounts) {
@@ -983,10 +1038,17 @@ function updateAccountSelectionUI() {
   const checkAll = $("#account-check-all");
   checkAll.checked = total > 0 && selected === total;
   checkAll.indeterminate = selected > 0 && selected < total;
-  $("#btn-batch-delete").disabled = selected === 0;
-  const scope = selected ? `已选 ${selected}` : "全部账号";
+  const selectedBusy = state.accounts.some((a) =>
+    state.selectedAccounts.has(String(a.id)) && isAccountBusy(a));
+  $("#btn-batch-delete").disabled = selected === 0 || selectedBusy;
+  const scope = selected ? `已选 ${selected}` : "ALL";
   $("#btn-group-start").textContent = `一键上号（${scope}）`;
   $("#btn-batch-fp").textContent = `批量换指纹（${scope}）`;
+  const refreshing = state.accounts.some(isAccountBusy);
+  $("#btn-batch-refresh-token").disabled = refreshing;
+  $("#btn-batch-refresh-token").textContent = refreshing
+    ? "账号任务进行中…"
+    : `一键刷新Token（${scope}）`;
   $("#btn-batch-delete").textContent = selected ? `删除（已选 ${selected}）` : "删除账号";
 }
 
@@ -999,6 +1061,8 @@ function fpSummary(fp) {
 function accountRow(a, gid) {
   const tr = document.createElement("tr");
   const on = !!a.enabled;
+  const busy = isAccountBusy(a);
+  const tokenBusy = a.last_status === "token_queued" || a.last_status === "token_running";
   tr.classList.toggle("is-disabled", !on);
   tr.classList.toggle("is-selected", state.selectedAccounts.has(String(a.id)));
   const proxyName = a.proxy_name
@@ -1031,12 +1095,13 @@ function accountRow(a, gid) {
     <td><span class="cell-muted">${esc(fmtTime(a.last_run_at))}</span></td>
     <td>
       <span class="cell-actions">
-        ${on ? `<button class="link-btn" type="button" data-act="run">上号</button>
-        <button class="link-btn" type="button" data-act="fp">换指纹</button>
-        <button class="link-btn" type="button" data-act="fpcheck" ${a.fp_check_result === "检测中" ? "disabled" : ""}>${a.fp_check_result === "检测中" ? "检测中…" : "指纹检测"}</button>
+        ${on ? `<button class="link-btn" type="button" data-act="run" ${busy ? "disabled" : ""}>${a.last_status === "running" ? "上号中…" : busy ? "队列中…" : "上号"}</button>
+        <button class="link-btn" type="button" data-act="fp" ${busy ? "disabled" : ""}>换指纹</button>
+        <button class="link-btn" type="button" data-act="refresh-token" ${busy ? "disabled" : ""}>${tokenBusy ? "刷新中…" : "刷新Token"}</button>
+        <button class="link-btn" type="button" data-act="fpcheck" ${busy || a.fp_check_result === "检测中" ? "disabled" : ""}>${a.fp_check_result === "检测中" ? "检测中…" : "指纹检测"}</button>
         <button class="link-btn" type="button" data-act="log">日志</button>` : `<span class="chip chip-warning">已停用</span>`}
         <button class="link-btn" type="button" data-act="edit">编辑</button>
-        <button class="link-btn is-danger" type="button" data-act="del">删除</button>
+        <button class="link-btn is-danger" type="button" data-act="del" ${busy ? "disabled" : ""}>删除</button>
       </span>
     </td>`;
 
@@ -1054,15 +1119,23 @@ function accountRow(a, gid) {
     if (act === "toggle-enabled") return toggleAccountEnabled(a, gid);
     if (act === "run") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
+      if (busy) return toast("账号正在运行或排队，请稍后再试", true);
       return accountRun(a);
     }
     if (act === "edit") return openAccountModal(a);
     if (act === "fp") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
+      if (busy) return toast("账号正在运行或排队，请稍后再试", true);
       return regenFp(a);
+    }
+    if (act === "refresh-token") {
+      if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
+      if (busy) return toast("账号正在运行或排队，请稍后再试", true);
+      return refreshToken(a, gid);
     }
     if (act === "fpcheck") {
       if (!a.enabled) return toast("账号已停用，仅允许编辑/删除", true);
+      if (busy) return toast("账号正在运行或排队，请稍后再试", true);
       return startFpCheck(a, gid);
     }
     if (act === "log") {
@@ -1077,6 +1150,7 @@ function accountRow(a, gid) {
         danger: true,
       });
       if (!ok) return;
+      if (busy) return toast("账号正在运行或排队，不能删除", true);
       try {
         await api(`/api/accounts/${a.id}`, { method: "DELETE" });
         toast("账号已删除");
@@ -1091,6 +1165,7 @@ function accountRow(a, gid) {
 
 async function toggleAccountEnabled(a, gid) {
   const next = !a.enabled;
+  if (!next && isAccountBusy(a)) return toast("账号正在运行或排队，不能停用", true);
   try {
     await api(`/api/accounts/${a.id}/enabled`, { method: "PUT", body: { enabled: next } });
     toast(next ? "账号已启用" : "账号已停用（仅可编辑/删除）");
@@ -1100,8 +1175,9 @@ async function toggleAccountEnabled(a, gid) {
 }
 
 async function accountRun(a) {
-  if (!a.has_password || !a.has_totp) {
-    toast(`账号 ${a.username} 未配置密码或2FA，请先编辑账号`, true);
+  if (isAccountBusy(a)) return toast("账号正在运行或排队，请稍后再试", true);
+  if (!a.has_password) {
+    toast(`账号 ${a.username} 未配置密码，请先编辑账号`, true);
     return;
   }
   try {
@@ -1124,6 +1200,60 @@ async function regenFp(a) {
     await loadAccounts(state.currentGroup);
   } catch (e) { toast(e.message, true); }
 }
+
+async function refreshToken(a, gid) {
+  if (isAccountBusy(a)) return toast("账号正在运行或排队，请稍后再试", true);
+  const ok = await confirmDialog({
+    title: `刷新 Token：${a.username}`,
+    message: "账号级刷新会忽略 30 分钟窗口限制，但仍要求上游状态正常且能识别 Token 过期时间。",
+    okText: "刷新 Token",
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/accounts/${a.id}/refresh-token`, { method: "POST" });
+    toast(`账号 ${a.username} 开始刷新 Token`);
+    await loadAccounts(gid);
+    pollTokenRefresh(gid, [Number(a.id)]);
+  } catch (e) { toast(e.message, true); }
+}
+
+function pollTokenRefresh(gid, ids, tried = 0) {
+  if (tried >= 900) return;             // 2s x 900：足够覆盖长批量任务
+  setTimeout(async () => {
+    if (String(state.currentGroup) !== String(gid)) return;
+    try {
+      await loadAccounts(gid);
+      const refreshing = state.accounts.some((a) =>
+        ids.includes(Number(a.id)) &&
+        (a.last_status === "token_queued" || a.last_status === "token_running"));
+      if (refreshing) return pollTokenRefresh(gid, ids, tried + 1);
+    } catch { return pollTokenRefresh(gid, ids, tried + 1); }
+  }, 2000);
+}
+
+$("#btn-batch-refresh-token").addEventListener("click", async () => {
+  const gid = state.currentGroup;
+  if (!gid) return toast("请先选择分组", true);
+  const selectedIds = selectedAccountIds();
+  const n = selectedIds.length || state.accounts.length;
+  if (!n) return toast("该分组暂无账号", true);
+  const ok = await confirmDialog({
+    title: `一键刷新 ${n} 个账号 Token`,
+    message: "将先同步上游数据；批量刷新仅处理上游状态正常且 Token 将在 30 分钟内过期的启用账号，多个账号之间间隔 5–20 秒。",
+    okText: "开始刷新",
+  });
+  if (!ok) return;
+  try {
+    const d = await api(`/api/groups/${gid}/refresh-tokens`, {
+      method: "POST",
+      body: { account_ids: selectedIds.length ? selectedIds : null },
+    });
+    if (!d.queued) return toast(d.message || "没有需要刷新 Token 的启用账号", true);
+    toast(`已提交 ${d.queued} 个账号刷新 Token`);
+    await loadAccounts(gid);
+    pollTokenRefresh(gid, d.accounts.map((a) => Number(a.id)));
+  } catch (err) { toast(err.message, true); }
+});
 
 $("#btn-batch-delete").addEventListener("click", async () => {
   const selected = state.accounts.filter((a) => state.selectedAccounts.has(String(a.id)));
@@ -1219,20 +1349,48 @@ function pollFpCheck(accountId, gid, tried = 0) {
 function openAccountModal(a = null) {
   if (!state.currentGroup) { toast("请先选择分组", true); return; }
   state.editingAccount = a;
+  state.accountModalMode = "single";
   state.fpBase = safeJson(a?.fingerprint, {});
   $("#dlg-account-title").textContent = a ? `编辑账号 #${a.id}` : "添加账号";
+  $("#account-mode-seg").classList.toggle("hidden", !!a);
+  setAccountModalMode("single");
+  $("#a-bulk").value = "";
   $("#a-username").value = a?.username || "";
   $("#a-password").value = "";
   $("#a-totp").value = "";
   $("#a-browser_mode").value = a?.browser_mode || "inherit";
   $("#a-enabled").checked = a ? !!a.enabled : true;
+  $("#a-enabled").value = a && !a.enabled ? "0" : "1";
   $("#a-remark").value = a?.remark || "";
-  // 账号未单独配置代理时，编辑框回填分组代理，和后端实际生效链路保持一致。
-  fillProxySelect(a?.proxy_id || a?.group_proxy_id || "");
+  setAccountProxySummary(a);
   const fp = a?.fingerprint || {};
   fillAccountFpForm(fp);
   $("#dlg-account").showModal();
 }
+
+function setAccountModalMode(mode) {
+  state.accountModalMode = mode === "bulk" ? "bulk" : "single";
+  $$("#account-mode-seg .segmented-item").forEach((b) =>
+    b.classList.toggle("is-active", b.dataset.mode === state.accountModalMode));
+  $("#account-single-fields").classList.toggle("hidden", state.accountModalMode !== "single");
+  $("#account-bulk-fields").classList.toggle("hidden", state.accountModalMode !== "bulk");
+  $("#a-username").required = state.accountModalMode === "single";
+  $("#a-password").required = state.accountModalMode === "single";
+  $("#a-bulk").required = state.accountModalMode === "bulk";
+  $("#account-input-title").textContent =
+    state.accountModalMode === "bulk" ? "批量账号" : "账号信息";
+}
+
+$("#account-mode-seg").addEventListener("click", (e) => {
+  const b = e.target.closest(".segmented-item");
+  if (b) setAccountModalMode(b.dataset.mode);
+});
+
+$("#btn-toggle-account-env").addEventListener("click", (e) => {
+  const open = $("#account-env-fields").classList.toggle("hidden");
+  e.currentTarget.textContent = open ? "展开" : "收起";
+  e.currentTarget.setAttribute("aria-expanded", String(!open));
+});
 
 /** 账号指纹表单回填：seed 手填，其余全部下拉（GPU/分辨率合并单选） */
 function fillAccountFpForm(fp) {
@@ -1278,13 +1436,21 @@ function fillProxySelect(selected, selId = "#a-proxy_id", directLabel = "不使�
   if (selected && sel.value !== String(selected)) addTempOption(sel, selected);
 }
 
+/** 账号表单不再暴露账号级代理选项；已有覆盖只读展示，提交时原样保留。 */
+function setAccountProxySummary(a) {
+  const summary = $("#a-proxy-summary");
+  const proxy = state.proxies.find((p) => String(p.id) === String(a?.proxy_id || ""));
+  summary.textContent = proxy ? `当前账号代理 ${proxy.name}` : "跟随分组代理";
+  summary.className = `chip ${proxy ? "chip-plain" : "chip-muted"}`;
+}
+
 $("#btn-regen-fp").addEventListener("click", () => {
   fillAccountFpForm(randomFp());
 });
 
 /* 账号指纹：回填已保存的时区数据（账号代理 > 分组代理 > 系统设置默认），不发起解析请求 */
 $("#btn-fp-geo").addEventListener("click", async () => {
-  const proxyId = $("#a-proxy_id").value;
+  const proxyId = state.editingAccount?.proxy_id || "";
   const gid = state.editingAccount?.group_id || state.currentGroup;
   let geo = null;
   if (proxyId) {
@@ -1340,18 +1506,79 @@ $("#fp-platform").addEventListener("change", () => {
   refreshFpDependentSelects("#fp", $("#fp-platform").value);
 });
 
+function parseBulkAccounts(text) {
+  const rows = [];
+  const errors = [];
+  const emails = new Set();
+  let duplicates = 0;
+  text.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const parts = line.split("|").map((v) => v.trim());
+    if (parts.length < 2 || parts.length > 3 || !parts[0] || !parts[1]) {
+      errors.push(`第 ${index + 1} 行格式应为：邮箱|密码|2FA密钥`);
+      return;
+    }
+    const email = parts[0].toLowerCase();
+    if (emails.has(email)) {
+      duplicates += 1;
+      return;
+    }
+    emails.add(email);
+    rows.push({ username: parts[0], password: parts[1], totp_secret: parts[2] || "" });
+  });
+  return { rows, errors, duplicates };
+}
+
 $("#form-account").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const body = {
+  const shared = {
     group_id: state.currentGroup,
+    browser_mode: $("#a-browser_mode").value,
+    fingerprint: readFpForm(),
+    enabled: $("#a-enabled").value === "1",
+    remark: $("#a-remark").value.trim(),
+    proxy_id: state.editingAccount?.proxy_id || null,
+  };
+
+  if (!state.editingAccount && state.accountModalMode === "bulk") {
+    const { rows, errors, duplicates } = parseBulkAccounts($("#a-bulk").value);
+    if (errors.length) return toast(errors[0], true);
+    if (!rows.length) return toast("请至少输入一个账号", true);
+
+    const failures = [];
+    let created = 0;
+    let skipped = duplicates;
+    for (const row of rows) {
+      try {
+        const result = await api("/api/accounts", {
+          method: "POST",
+          body: { ...shared, ...row },
+        });
+        if (result.exists) skipped += 1;
+        else created += 1;
+      } catch (err) {
+        failures.push(`${row.username}: ${err.message}`);
+      }
+    }
+    await loadAccounts(state.currentGroup);
+    await loadGroups();
+    if (failures.length) {
+      toast(`已添加 ${created} 个，跳过 ${skipped} 个，失败 ${failures.length} 个；${failures[0]}`, true);
+    } else {
+      $("#dlg-account").close();
+      toast(created
+        ? (skipped ? `已添加 ${created} 个账号，跳过 ${skipped} 个已存在账号` : `已添加 ${created} 个账号`)
+        : `所选账号均已存在，已跳过 ${skipped} 个`);
+    }
+    return;
+  }
+
+  const body = {
+    ...shared,
     username: $("#a-username").value.trim(),
     password: $("#a-password").value || (state.editingAccount ? "__KEEP_OLD__" : ""),
     totp_secret: $("#a-totp").value.trim() || (state.editingAccount ? "__CLEAR__" : ""),
-    browser_mode: $("#a-browser_mode").value,
-    fingerprint: readFpForm(),
-    enabled: $("#a-enabled").checked,
-    remark: $("#a-remark").value.trim(),
-    proxy_id: $("#a-proxy_id").value ? +$("#a-proxy_id").value : null,
   };
   if (!body.password) { toast("密码不能为空", true); return; }
   // 账号指纹任一字段变化时二次确认（新建无原值，不弹）
@@ -1361,10 +1588,11 @@ $("#form-account").addEventListener("submit", async (e) => {
     if (!ok) return;
   }
   try {
-    if (state.editingAccount) await api(`/api/accounts/${state.editingAccount.id}`, { method: "PUT", body });
-    else await api("/api/accounts", { method: "POST", body });
+    let result;
+    if (state.editingAccount) result = await api(`/api/accounts/${state.editingAccount.id}`, { method: "PUT", body });
+    else result = await api("/api/accounts", { method: "POST", body });
     $("#dlg-account").close();
-    toast("账号已保存");
+    toast(!state.editingAccount && result.exists ? "账号已存在，已跳过" : "账号已保存");
     await loadAccounts(state.currentGroup);
     await loadGroups();
   } catch (err) { toast(err.message, true); }
@@ -1434,7 +1662,8 @@ function renderTaskMetrics(tasks) {
   $("#t-total").textContent = tasks.length;
   $("#t-success").textContent = n("success");
   $("#t-failed").textContent = n("failed") + n("callback_failed");
-  $("#t-running").textContent = n("running") + n("pending");
+  $("#t-running").textContent =
+    n("queued") + n("running") + n("token_queued") + n("token_running") + n("pending");
 }
 
 function taskRow(t) {
@@ -1447,7 +1676,7 @@ function taskRow(t) {
         <span class="cell-sub">${esc(t.username || `账号 ${t.account_id}`)}</span>
       </span>
     </td>
-    <td>${statusChip(t.status)}</td>
+    <td>${taskStatusChip(t)}</td>
     <td>${callbackChip(t.callback_status)}</td>
     <td><span class="cell-muted">${esc(fmtTime(t.created_at))}</span></td>
     <td><span class="cell-actions"><button class="link-btn" type="button" data-act="detail">详情</button></span></td>`;
@@ -1476,6 +1705,9 @@ function detailBlock(title, content) {
 /* 后端 scheduler 写入的步骤结构：{t, step, detail, ok} */
 const STEP_LABEL = {
   task_created: "任务入队",
+  token_refresh_started: "开始刷新Token",
+  upstream_refresh: "调用上游刷新接口",
+  token_refresh_result: "刷新Token结果",
   browser_mode: "解析浏览器模式",
   fingerprint: "应用浏览器指纹",
   browser_launched: "启动浏览器",
@@ -1512,7 +1744,7 @@ async function showTaskApi(id, ctx = {}) {
   const parts = [
     `<div class="detail-grid">
       ${detailItem("任务编号", `#${t.id}`, true)}
-      ${detailItem("状态", STATUS_MAP[t.status]?.label || t.status)}
+      <div class="detail-item"><span class="detail-key">状态</span><span class="detail-val">${taskStatusChip(t)}</span></div>
       ${detailItem("浏览器模式", modeText(t.browser_mode))}
       ${detailItem("回调状态", CALLBACK_MAP[t.callback_status]?.label || t.callback_status || "—")}
       ${detailItem("开始时间", fmtTime(t.started_at))}
@@ -1920,6 +2152,7 @@ async function loadSettings() {
   $("#cloak-cdp").value = s.cloak_cdp_url || "";
 
   $("#log-retention").value = s.log_retention_days ?? 3;
+  $("#token-refresh-interval").value = s.token_refresh_interval_seconds ?? 3600;
   $("#fp-check-url").value = s.fp_check_url || "";
   $("#geo-country").value = s.default_geo_country || "";
   $("#geo-region").value = s.default_geo_region || "";
@@ -1981,6 +2214,20 @@ $("#btn-prune-now").addEventListener("click", async () => {
   try {
     const r = await api("/api/logs/prune", { method: "POST" });
     toast(`已清理：适配器日志 ${r.adapter_logs_deleted} 条 · 任务日志 ${r.tasks_deleted} 条`);
+  } catch (e) { toast(e.message, true); }
+});
+
+$("#btn-save-token-refresh").addEventListener("click", async () => {
+  const seconds = +$("#token-refresh-interval").value;
+  if (!seconds || seconds < 60 || seconds > 2592000) {
+    return toast("刷新间隔需在 60–2592000 秒之间", true);
+  }
+  try {
+    await api("/api/settings", {
+      method: "PUT",
+      body: { token_refresh_interval_seconds: seconds },
+    });
+    toast(`Token 自动刷新间隔已设为 ${seconds} 秒`);
   } catch (e) { toast(e.message, true); }
 });
 

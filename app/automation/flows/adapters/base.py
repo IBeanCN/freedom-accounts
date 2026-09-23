@@ -10,8 +10,9 @@ credential operations:
   - refresh_token   刷新账号令牌
 
 Contract:
-  - These operations are NEVER exposed on the web UI and have no HTTP
-    endpoints of their own; they are invoked internally (scheduler/CLI).
+  - These operations are adapter capabilities, not adapter HTTP endpoints.
+    They are invoked by internal services; refresh_token is additionally
+    triggered by the account UI API.
   - Every call MUST append one row to the `adapter_logs` table via
     `alog.log_action` — logging is the only observable output.
   - `group` carries the group row: `id`, `login_url` (= upstream base URL),
@@ -24,7 +25,7 @@ class FlowAdapter:
     """A pluggable login-flow strategy.
 
     Attributes:
-        key:          stable identifier stored in groups.login_type (e.g. "password").
+        key:          stable identifier stored in groups.login_type (e.g. "cpr").
         label:        human-readable name for the frontend dropdown.
         run_sync:     sync flow  (executed on the cloakbrowser session thread).
         run_async:    async flow (native async Playwright contexts).

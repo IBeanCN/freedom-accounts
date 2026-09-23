@@ -38,11 +38,14 @@ CREATE TABLE IF NOT EXISTS accounts (
     remote_id TEXT NOT NULL DEFAULT '',    -- upstream account id (from sync), stable across syncs
     remote_status TEXT NOT NULL DEFAULT '', -- upstream status translated to Chinese by the adapter (display-only)
     remote_remark TEXT NOT NULL DEFAULT '', -- upstream remark pulled at sync (display-only)
+    token_expires_at TEXT NOT NULL DEFAULT '', -- upstream access token expiry (RFC3339/epoch)
+    token_refresh_result TEXT NOT NULL DEFAULT '', -- '' | 队列中 | 刷新中 | 成功... | 失败: ...
+    token_refresh_at TEXT,                 -- last refresh attempt timestamp
     fp_check_result TEXT NOT NULL DEFAULT '', -- fingerprint risk check: '' | 检测中 | 高风险/80 | 失败: ...
     fp_check_at TEXT,                      -- last check timestamp
     remark TEXT NOT NULL DEFAULT '',
     last_task_id INTEGER,
-    last_status TEXT NOT NULL DEFAULT 'never', -- never|running|success|failed
+    last_status TEXT NOT NULL DEFAULT 'never', -- never|queued|running|token_queued|token_running|success|failed
     last_message TEXT NOT NULL DEFAULT '',
     last_run_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -69,7 +72,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'pending', -- pending|running|success|failed|callback_failed
+    operation TEXT NOT NULL DEFAULT 'login', -- login|token_refresh
+    status TEXT NOT NULL DEFAULT 'pending', -- pending|queued|running|success|failed|callback_failed
     browser_mode TEXT NOT NULL DEFAULT '',  -- resolved mode actually used
     fingerprint_json TEXT NOT NULL DEFAULT '{}',
     steps TEXT NOT NULL DEFAULT '[]',       -- JSON log of steps
@@ -151,6 +155,28 @@ async def init_db() -> None:
         await db.execute("ALTER TABLE accounts ADD COLUMN remote_status TEXT NOT NULL DEFAULT ''")
     if "remote_remark" not in acols:
         await db.execute("ALTER TABLE accounts ADD COLUMN remote_remark TEXT NOT NULL DEFAULT ''")
+    if "token_expires_at" not in acols:
+        await db.execute("ALTER TABLE accounts ADD COLUMN token_expires_at TEXT NOT NULL DEFAULT ''")
+    if "token_refresh_result" not in acols:
+        await db.execute("ALTER TABLE accounts ADD COLUMN token_refresh_result TEXT NOT NULL DEFAULT ''")
+    if "token_refresh_at" not in acols:
+        await db.execute("ALTER TABLE accounts ADD COLUMN token_refresh_at TEXT")
+    async with db.execute("PRAGMA table_info(tasks)") as cur:
+        tcols = {r[1] for r in await cur.fetchall()}
+    if "operation" not in tcols:
+        await db.execute("ALTER TABLE tasks ADD COLUMN operation TEXT NOT NULL DEFAULT 'login'")
+    # A restart cancels background workers; clear stale progress markers.
+    await db.execute(
+        """UPDATE accounts SET last_status='failed',
+               token_refresh_result='失败: 服务重启中断'
+           WHERE last_status IN ('token_queued','token_running')""")
+    await db.execute(
+        """UPDATE accounts SET last_status='failed', last_message='服务重启中断'
+           WHERE last_status IN ('queued','running')""")
+    await db.execute(
+        """UPDATE tasks SET status='failed', error='服务重启中断', finished_at=
+               datetime('now','localtime')
+           WHERE status IN ('queued','running')""")
     if "fp_check_result" not in acols:
         await db.execute("ALTER TABLE accounts ADD COLUMN fp_check_result TEXT NOT NULL DEFAULT ''")
     if "fp_check_at" not in acols:

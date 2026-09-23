@@ -28,7 +28,7 @@
 
 1. **内容优先，装饰退后。** 这是一个运维控制台，用户来这里是「看清状态、快速操作」，不是来欣赏界面的。任何不承载信息的视觉元素都应删掉。
 2. **用留白和描边表达结构，而不是用线条和阴影堆砌。** 页面底色（羊皮纸灰）与卡片底色（纯白）之间的 1px 差异，已经足够划出层级。
-3. **一屏之内只允许一个主操作。** 每个页面右上角只有一个 `btn-primary`；卡片内部的「一键上号」是局部主操作，用同色但降一档尺寸（`btn-sm`）表达。
+3. **一屏之内只允许一个主操作。** 每个页面右上角只有一个 `btn-primary`；分组卡操作区的「一键上号」是局部主操作，用同色但降一档尺寸（`btn-sm`）表达。账号面板头部批量操作统一用 `.btn-secondary.btn-sm`。
 4. **危险操作必须二次确认，且用颜色和措辞共同提示后果。** 确认框文案要说清「会连带删除什么」，而不是只问「确定吗」。
 5. **状态用颜色 + 文字双重编码。** 色盲用户仅靠红色无法区分「失败」与「回调失败」，所以徽标里始终带文字。
 
@@ -127,8 +127,11 @@
 | 值 | 文案 | 徽标类 | 颜色 |
 | --- | --- | --- | --- |
 | `never` | 未运行 | `chip-muted` | 中性灰 |
-| `running` | 运行中 | `chip-info` | 强调蓝 |
-| `success` | 成功 | `chip-success` | 绿 |
+| `queued` | 上号队列中 | `chip-warning` | 橙 |
+| `running` | 正在上号 | `chip-info` | 强调蓝 |
+| `token_queued` | 刷新Token队列中 | `chip-warning` | 橙 |
+| `token_running` | 正在刷新Token | `chip-info` | 强调蓝 |
+| `success` | 已完成 | `chip-success` | 绿 |
 | `failed` | 失败 | `chip-danger` | 红 |
 
 **上游账号状态（`accounts.remote_status`，适配器已转中文，仅展示、不影响本地 enabled）**
@@ -148,10 +151,13 @@
 | 值 | 文案 | 徽标类 | 颜色 |
 | --- | --- | --- | --- |
 | `pending` | 排队中 | `chip-warning` | 橙 |
-| `running` | 运行中 | `chip-info` | 强调蓝 |
-| `success` | 成功 | `chip-success` | 绿 |
+| `queued` | 上号队列中 / 刷新Token队列中* | `chip-warning` | 橙 |
+| `running` | 正在上号 | `chip-info` | 强调蓝 |
+| `success` | 已完成 | `chip-success` | 绿 |
 | `failed` | 失败 | `chip-danger` | 红 |
 | `callback_failed` | 回调失败 | `chip-danger` | 红 |
+
+> `operation=token_refresh` 的 `queued` / `running` 由 `taskStatusChip()` 显示为「刷新Token队列中」/「正在刷新Token」；其他任务显示上号语义。账号侧四种运行态统一禁用重复操作按钮。
 
 **回调状态（`tasks.callback_status`）**
 
@@ -162,7 +168,7 @@
 | `failed` | 回调失败 | `chip-danger` | 红 |
 | `skipped` | 已跳过 | `chip-warning` | 橙 |
 
-> 注意：`callback_failed` 归入「失败」统计，`pending` 归入「运行中」统计 —— 见 `renderTaskMetrics()`。
+> 注意：`callback_failed` 归入「失败」统计，`pending` / `queued` / `running` / `token_queued` / `token_running` 归入「进行中」统计 —— 见 `renderTaskMetrics()`。
 
 ---
 
@@ -366,7 +372,7 @@
 
 **指标数字必须真实可算。** 任务页的指标固定基于「最近 100 条全量任务」，不随筛选变化 —— 否则「总任务」会在切换筛选时跳动，误导用户。
 
-**只在数字本身构成决策依据时才用。** 当前只有任务页使用（总任务 / 成功 / 失败 / 运行中）。**分组页不设指标条**（2026-09-21 移除）：那里的「分组数」由 `.section-head` 的 `#group-count` 徽标给出，「账号数」在账号面板头部，「运行中」在任务页 —— 三个数字都已有归宿，再铺一条概述条只会把页面首个视觉焦点让给不承载任何操作的装饰性数字，并把 `.section-head`（真正的操作起点）挤到第二屏。
+**只在数字本身构成决策依据时才用。** 当前只有任务页使用（总任务 / 成功 / 失败 / 进行中）。**分组页不设指标条**（2026-09-21 移除）：那里的「分组数」由 `.section-head` 的 `#group-count` 徽标给出，「账号数」在账号面板头部，「进行中」在任务页 —— 三个数字都已有归宿，再铺一条概述条只会把页面首个视觉焦点让给不承载任何操作的装饰性数字，并把 `.section-head`（真正的操作起点）挤到第二屏。
 
 ### 7.7 表格 `.tbl`
 
@@ -507,7 +513,7 @@ toast("密码不能为空", true);    // 错误
 - 圆点用 `.fp-badge`（15px 实心圆），配色走语义：`.fp-badge-success` 低 / `.fp-badge-warning` 中 / `.fp-badge-danger` 高 / `.fp-badge-info` 检测中 / `.fp-badge-muted` 失败。风险等级与分数只放在 `title` 里，不占版面。注意上游文案是「中等风险」而非「中风险」，`fpLevel()` 用 `/高|中|低/` 判断。
 - **选中态** `.is-selected`：`border-color: --fa-accent` + `box-shadow: 0 0 0 1px --fa-accent` 模拟加粗描边 —— 属于 §6 的 ring 例外，不是层级阴影。**不换底色**。
 - **展开箭头 `.group-toggle` 复用 `.icon-btn`**：自身只保留 `flex:none` / `margin-left:auto` 与 chev 图标切换，尺寸、底色、悬停、按下态全部继承 `.icon-btn`（30×30 药丸）。**不要为它另写一套几何** —— 那正是它此前与页内其他图标按钮不一致的原因。
-- **操作区 `.group-actions` 内按钮形态必须统一**：全部 `.btn .btn-sm`（32px 高、13px 水平内边距、999px 圆角），只有语义色不同 —— 主操作 `.btn-primary`，其余 `.btn-secondary`，删除再加 `.is-danger`。**不允许把「编辑」「删除」降级成无底无框的文字按钮**：它们的横向内边距只有 6px，与其余 13px 按钮并排会一紧一松、有无边框也参差，同一行里就会出现两种内边距的混搭。`layout-check.py` 断言同页所有操作按钮的 `height` / `paddingLeft` / `borderTopLeftRadius` 各自唯一。
+- **操作区 `.group-actions` 内按钮形态必须统一**：全部 `.btn .btn-sm`，并通过 `.group-actions .btn-sm` 覆盖为紧凑规格（28px 高、`--fa-space-2` 水平内边距与间距、999px 圆角），只有语义色不同 —— 主操作 `.btn-primary`，其余 `.btn-secondary`，删除再加 `.is-danger`。**不允许把「编辑」「删除」降级成无底无框的文字按钮**：紧凑规格用于降低操作区视觉重量；标题行等普通 `.btn-sm` 仍是 32px。`layout-check.py` 断言同页所有操作按钮的 `height` / `paddingLeft` / `borderTopLeftRadius` 各自唯一。
 
 **交互解耦：箭头是操作项的开关，卡体是账号列表的开关。** 两者是**两个独立控件**，一次点击只能触发其中一个：
 
@@ -524,9 +530,13 @@ toast("密码不能为空", true);    // 错误
 
 **不要在这一页加指标条**，理由见 §7.6。
 
-`scripts/layout-check.py` 对分组页断言：无指标条、首元素是 `.section-head`、顶栏无可见操作按钮、顶栏未塌陷、「新建分组」按钮在标题行内且紧接计数徽标并垂直居中、网格无水平溢出、首行卡片等宽且顶部对齐、每卡 5 个操作按钮、操作区按钮高度/内边距/圆角各自一致、箭头为 30×30、风险圆点在分组名左侧且垂直居中、无圆点分组名回到行首。
+`scripts/layout-check.py` 对分组页断言：无指标条、首元素是 `.section-head`、顶栏无可见操作按钮、顶栏未塌陷、「新建分组」按钮在标题行内且紧接计数徽标并垂直居中、网格无水平溢出、首行卡片等宽且顶部对齐、浏览器按钮按引擎成对显隐（本地 7 个 / CDP 5 个）、操作区按钮高度/内边距/圆角各自一致、箭头为 30×30、风险圆点在分组名左侧且垂直居中、无圆点分组名回到行首。
 
 同一脚本的**交互解耦**一节用真实浏览器点按并断言：初始操作项收起且卡片未选中、箭头 `aria-expanded=false` 且 `aria-controls` 指向本卡操作区且 `tabIndex=0`；点卡体 → 账号列表展开 + 卡片选中，但操作项 `display` 仍为 `none`；点箭头 → 操作项展开，而选中态与账号列表不变；操作项已展开时点卡体不会被收起；再点箭头可正常收起。
+
+### 7.17 账号自动刷新 `.panel-title-row`
+
+账号面板头部左侧用 `.panel-title-row` 承载分组名和自动刷新入口：`.panel-title` 保持可省略，右侧依次是 `.auto-refresh-label` 和紧凑下拉 `.select.select-sm`。默认「关闭」，可选 5 / 10 / 15 / 30 秒；仅停留在分组页且账号面板展开时轮询当前分组的账号列表。上一次列表请求完成后再排下一次定时器，避免短间隔下请求堆叠。
 
 ---
 
@@ -657,6 +667,15 @@ toast("密码不能为空", true);    // 错误
 | 给 `td` 直接挂 `display: flex` | 用 `.cell-stack` / `.cell-actions` 包裹 |
 | 破坏性操作用 `confirm()` | `confirmDialog({ danger: true, okText: "删除…" })` |
 | 在 `.btn` 上改按下反馈 | 统一 `scale(0.95)` |
+
+### 11.4 账号 Token 刷新（2026-09-22）
+
+账号面板的批量操作区使用既有的 `.btn-secondary.btn-sm`，账号行使用既有的 `.link-btn`，不新增组件。批量入口标题随勾选范围变化；四种运行态禁用上号、刷新、换指纹、指纹检测和删除按钮，批量 Token 刷新在有账号运行时禁用。新增 API 为 `/api/groups/:id/refresh-tokens` 与 `/api/accounts/:id/refresh-token`，业务约束以后端契约为准。
+系统设置卡复用 `.setting-card` 三段结构，新增「Token 自动刷新」执行间隔输入；定时巡检复用同一套后端规则。
+
+### 11.5 账号添加弹窗（2026-09-22）
+
+添加账号复用 `.segmented` 切换「单个添加」与「批量添加」，批量输入使用既有 `.textarea`，每行格式为 `邮箱|密码|2FA密钥`（2FA 可选）。同分组重复账号由后端跳过；批量输入中的重复行直接去重，结果文案区分新增与跳过数量。浏览器模式、代理和指纹配置收进「分组默认环境」折叠区；折叠区未修改时分别提交 `inherit`、`null` 和 `{}`，由后端按分组浏览器模式、分组代理和分组指纹模板落库。账号表单不展示代理可选项，仅以徽标显示「跟随分组代理」或已有账号代理；编辑时原样保留既有 `proxy_id`，不提供账号级修改入口。
 
 ---
 

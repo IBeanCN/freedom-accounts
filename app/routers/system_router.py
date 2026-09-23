@@ -66,6 +66,8 @@ class SettingsBody(BaseModel):
     global_browser_mode: str | None = Field(default=None, pattern="^(headless|headed)$")
     cloak_cdp_url: str | None = None
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
+    token_refresh_interval_seconds: int | None = Field(
+        default=None, ge=60, le=2_592_000)
     fp_check_url: str | None = None
     default_geo_country: str | None = Field(default=None, max_length=2)
     default_geo_region: str | None = None
@@ -81,10 +83,16 @@ async def get_settings(_: None = Depends(require_admin)):
         retention = max(1, int(await settings.get("log_retention_days") or 3))
     except ValueError:
         retention = 3
+    try:
+        token_interval = max(60, int(await settings.get(
+            "token_refresh_interval_seconds") or 3600))
+    except ValueError:
+        token_interval = 3600
     return {
         "global_browser_mode": await settings.get("global_browser_mode") or "headless",
         "cloak_cdp_url": cdp,
         "log_retention_days": retention,
+        "token_refresh_interval_seconds": token_interval,
         "fp_check_url": await settings.get("fp_check_url") or "",
         "default_geo_country": await settings.get("default_geo_country") or "",
         "default_geo_region": await settings.get("default_geo_region") or "",
@@ -105,6 +113,9 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
         await settings.set_value("cloak_cdp_url", body.cloak_cdp_url.strip())
     if body.log_retention_days is not None:
         await settings.set_value("log_retention_days", str(body.log_retention_days))
+    if body.token_refresh_interval_seconds is not None:
+        await settings.set_value(
+            "token_refresh_interval_seconds", str(body.token_refresh_interval_seconds))
     if body.fp_check_url is not None:
         await settings.set_value("fp_check_url", body.fp_check_url.strip())
     for key in ("default_geo_country", "default_geo_region", "default_geo_city",

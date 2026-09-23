@@ -8,12 +8,11 @@
 import inspect
 
 from .adapters.base import FlowAdapter
-from .adapters.password import PasswordAdapter
 from .adapters.sub2api import Sub2ApiAdapter
 from .adapters.cpr import CprAdapter
 
 # ---- registry (order defines dropdown order) -------------------------------
-ADAPTERS: list[type] = [PasswordAdapter, Sub2ApiAdapter, CprAdapter]
+ADAPTERS: list[type] = [Sub2ApiAdapter, CprAdapter]
 
 ADAPTER_MAP: dict[str, type] = {a.key: a for a in ADAPTERS}
 _RUN_CONTEXT_SUPPORTED: dict[object, bool] = {}
@@ -21,17 +20,20 @@ _RUN_CONTEXT_SUPPORTED: dict[object, bool] = {}
 # login types exposed to the frontend dropdown (label shown, key stored)
 LOGIN_TYPES: list[dict] = [a.manifest() for a in ADAPTERS]
 
-# OpenAI 授权流程必须先完成账号密码和 TOTP 前置校验，避免浏览器启动后才失败。
+# OpenAI 授权流程必须有账号密码；TOTP 可选，但已配置时必须可用。
 OPENAI_AUTH_TYPES = {"sub2api", "cpr"}
 
 
 def pick_flow(login_type: str, sync: bool):
     """Return the flow callable for `login_type`.
 
-    Unknown / legacy values (e.g. old free-text "password / oauth" rows)
-    fall back to the generic password adapter so existing groups keep running.
+    The generic password adapter has been retired; unknown or legacy values
+    fail fast instead of running an incompatible flow.
     """
-    cls = ADAPTER_MAP.get((login_type or "").strip().lower(), PasswordAdapter)
+    key = (login_type or "").strip().lower()
+    if key not in ADAPTER_MAP:
+        raise ValueError(f"unsupported login_type: {login_type!r}; valid: {sorted(ADAPTER_MAP)}")
+    cls = ADAPTER_MAP[key]
     return cls.run_sync if sync else cls.run_async
 
 
@@ -43,8 +45,11 @@ def validate_login_type(value: str) -> str:
 
 
 def get_adapter(login_type: str):
-    """Return the adapter class for `login_type` (falls back to password)."""
-    return ADAPTER_MAP.get((login_type or "").strip().lower(), PasswordAdapter)
+    """Return the adapter class; unknown / retired types fail fast."""
+    key = (login_type or "").strip().lower()
+    if key not in ADAPTER_MAP:
+        raise ValueError(f"unsupported login_type: {login_type!r}; valid: {sorted(ADAPTER_MAP)}")
+    return ADAPTER_MAP[key]
 
 
 def requires_openai_credentials(login_type: str) -> bool:

@@ -12,8 +12,8 @@ const { window } = dom;
 
 // ---- mock fetch：/api/meta 返回带 fp_options，其余返回空壳 ----
 const META = {
-  login_types: [{ key: "password", label: "账密表单" }],
-  group_types: [{ key: "openai", label: "OpenAI", default_login_type: "password" }],
+  login_types: [{ key: "sub2api", label: "sub2api" }],
+  group_types: [{ key: "openai", label: "OpenAI", default_login_type: "sub2api" }],
   fp_options: {
     platforms: ["windows", "macos"],
     brands: ["Chrome", "Edge", "Opera", "Vivaldi"],

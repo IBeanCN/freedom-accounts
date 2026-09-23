@@ -200,8 +200,22 @@ svg { display: block; }
 .panel-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 16px 20px;
+}
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--fa-space-2);
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.panel-title-row .panel-title { flex: 0 1 auto; }
+.auto-refresh-label {
+  font-size: var(--fa-fs-label);
+  color: var(--fa-text-2);
+  white-space: nowrap;
 }
 .panel-title {
   font-size: var(--fa-fs-h2);
@@ -212,6 +226,13 @@ svg { display: block; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.select.select-sm {
+  width: 56px;
+  height: 32px;
+  padding: 0 var(--fa-space-4) 0 var(--fa-space-1);
+  border-radius: var(--fa-radius-sm);
+  background-position: right var(--fa-space-1) center;
 }
 
 /* ==========================================================================
@@ -546,6 +567,10 @@ svg { display: block; }
   border-top: 1px solid var(--fa-divider);
 }
 .group-card.is-open .group-actions { display: flex; }
+.group-actions .btn-sm {
+  height: 28px;
+  padding: 0 var(--fa-space-2);
+}
 .group-avatar {
   display: flex;
   align-items: center;

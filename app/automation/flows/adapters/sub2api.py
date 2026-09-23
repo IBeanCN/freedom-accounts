@@ -248,6 +248,8 @@ class Sub2ApiAdapter(FlowAdapter):
                     "status": it.get("status"),
                     "status_label": translate_remote_status(it.get("status")),
                     "enabled": it.get("enabled"),
+                    "access_token_expires_at": (
+                        it.get("accessTokenExpiresAt") or it.get("tokenExpiresAt")),
                     # 上游 error_message 并入备注（同步后页面可见，便于判断 401 过期等）
                     "remark": str(it.get("remark") or it.get("error_message") or "").strip()[:300],
                 } for it in items],

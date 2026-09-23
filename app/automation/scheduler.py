@@ -28,6 +28,10 @@ _account_slots: set[int] = set()
 _running_accounts: set[int] = set()
 _account_state_lock = asyncio.Lock()
 _RUN_TASKS: set[asyncio.Task] = set()
+# After a run's browser closes and result is persisted, keep its group slot
+# reserved briefly so the next queued account never reuses it immediately.
+RUN_COOLDOWN_MIN_SECONDS = 15.0
+RUN_COOLDOWN_MAX_SECONDS = 30.0
 
 
 def _now() -> str:
@@ -36,6 +40,7 @@ def _now() -> str:
 
 async def enqueue(group_id: int, account_ids: list[int]) -> int:
     """Queue each account once; queued/running accounts cannot be duplicated."""
+    db = await database.get_db()
     async with _lock:
         g = _groups.get(group_id)
         if g is None:
@@ -44,11 +49,18 @@ async def enqueue(group_id: int, account_ids: list[int]) -> int:
             g["dispatcher"] = asyncio.create_task(_dispatcher(group_id, g))
         queued: list[int] = []
         for aid in account_ids:
-            if aid in _account_slots:
+            if aid in _account_slots or aid in _running_accounts:
                 continue
             _account_slots.add(aid)
             queued.append(aid)
             await g["queue"].put(aid)
+    if queued:
+        # 入队即对外可见，防止前端在任务真正启动前重复提交。
+        marks = ",".join("?" * len(queued))
+        await db.execute(
+            f"""UPDATE accounts SET last_status='queued', last_message='上号队列中'
+                WHERE id IN ({marks})""", tuple(queued))
+        await db.commit()
         return len(queued)
 
 
@@ -92,7 +104,6 @@ async def _dispatcher(group_id: int, g: dict) -> None:
 
 async def _run_one(group_id: int, account_id: int, sem: asyncio.Semaphore) -> None:
     async with _account_state_lock:
-        _account_slots.discard(account_id)
         if account_id in _running_accounts:
             return
         _running_accounts.add(account_id)
@@ -115,8 +126,13 @@ async def _run_one(group_id: int, account_id: int, sem: asyncio.Semaphore) -> No
         async with sem:
             await _execute(db, g, a, password=password, totp_secret=totp_secret,
                            group_decrypted=group_row)
+            # Hold the semaphore while cooling down, so the next queued task
+            # cannot acquire this group's concurrency slot as soon as it ends.
+            await asyncio.sleep(random.uniform(
+                RUN_COOLDOWN_MIN_SECONDS, RUN_COOLDOWN_MAX_SECONDS))
     finally:
         async with _account_state_lock:
+            _account_slots.discard(account_id)
             _running_accounts.discard(account_id)
 
 

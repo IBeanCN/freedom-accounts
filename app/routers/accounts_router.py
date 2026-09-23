@@ -10,11 +10,32 @@ from ..core import crypto
 from ..automation import scheduler
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
-from ..automation.flows import requires_openai_credentials
-from ..automation.flows.adapters._util import translate_remote_status
+from ..automation import token_refresh
+from ..automation.flows import get_adapter
+from ..automation.flows.adapters._util import totp_code, translate_remote_status
 from .deps import require_admin
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_admin)])
+
+_BUSY_MESSAGES = {
+    "queued": "账号在上号队列中，请稍后再试",
+    "running": "账号正在上号，请稍后再试",
+    "token_queued": "账号在刷新 Token 队列中，请稍后再试",
+    "token_running": "账号正在刷新 Token，请稍后再试",
+}
+
+
+def _reject_busy(status: str) -> None:
+    if token_refresh.is_account_busy(status):
+        raise HTTPException(409, _BUSY_MESSAGES.get(status, "账号正在运行，请稍后再试"))
+
+
+def _has_valid_totp(encrypted_secret: str) -> bool:
+    """Run-time TOTP precheck; an empty secret remains optional and never enters here."""
+    try:
+        return totp_code(crypto.decrypt(encrypted_secret)) is not None
+    except Exception:
+        return False
 
 
 class AccountBody(BaseModel):
@@ -81,9 +102,17 @@ async def list_accounts(group_id: Optional[int] = None):
 @router.post("")
 async def create_account(body: AccountBody):
     db = await database.get_db()
+    username = body.username.strip()
     g = await (await db.execute("SELECT * FROM groups WHERE id=?", (body.group_id,))).fetchone()
     if not g:
         raise HTTPException(404, "group not found")
+    # 批量粘贴常见大小写不一致；同组内按邮箱语义查重，已存在直接跳过。
+    existing = await db.execute(
+        "SELECT id FROM accounts WHERE group_id=? AND lower(username)=lower(?)",
+        (body.group_id, username))
+    old = await existing.fetchone()
+    if old:
+        return {"id": old["id"], "fingerprint": {}, "created": False, "exists": True}
     fp = fp_mod.sanitize(body.fingerprint)
     if not fp:
         # no explicit fingerprint: inherit the group template (seed randomized);
@@ -103,11 +132,11 @@ async def create_account(body: AccountBody):
         """INSERT INTO accounts(group_id,username,password,totp_secret,browser_mode,
            fingerprint,enabled,remark,proxy_id)
            VALUES(?,?,?,?,?,?,?,?,?)""",
-        (body.group_id, body.username, encrypted_password, encrypted_totp,
+        (body.group_id, username, encrypted_password, encrypted_totp,
          body.browser_mode, json.dumps(fp, ensure_ascii=False),
          int(body.enabled), body.remark, proxy_id))
     await db.commit()
-    return {"id": cur.lastrowid, "fingerprint": fp}
+    return {"id": cur.lastrowid, "fingerprint": fp, "created": True, "exists": False}
 
 
 @router.put("/{account_id}")
@@ -156,8 +185,8 @@ async def set_account_enabled(account_id: int, body: EnabledBody):
     old = await row.fetchone()
     if not old:
         raise HTTPException(404, "account not found")
-    if not body.enabled and old["last_status"] == "running":
-        raise HTTPException(409, "账号正在运行，不能停用")
+    if not body.enabled:
+        _reject_busy(old["last_status"])
     await db.execute("UPDATE accounts SET enabled=? WHERE id=?",
                      (int(body.enabled), account_id))
     await db.commit()
@@ -171,8 +200,7 @@ async def delete_account(account_id: int):
     account = await row.fetchone()
     if not account:
         raise HTTPException(404, "account not found")
-    if account["last_status"] == "running":
-        raise HTTPException(409, "账号正在运行，不能删除")
+    _reject_busy(account["last_status"])
     await db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
     await db.commit()
     return {"ok": True}
@@ -188,8 +216,8 @@ async def start_accounts(body: StartBody):
     if body.account_ids:
         marks = ",".join("?" * len(body.account_ids))
         rows = await db.execute(
-            f"""SELECT a.id, a.group_id, a.enabled, a.username, a.password,
-                       a.totp_secret, g.login_type
+            f"""SELECT a.id, a.group_id, a.enabled, a.last_status, a.username,
+                       a.password, a.totp_secret, g.login_type
                 FROM accounts a JOIN groups g ON g.id=a.group_id
                 WHERE a.id IN ({marks})""",
             tuple(body.account_ids))
@@ -197,24 +225,30 @@ async def start_accounts(body: StartBody):
         raise HTTPException(400, "account_ids required")
     pairs, enabled_rows, blocked = [], [], 0
     for r in await rows.fetchall():
-        if r["enabled"]:
+        if token_refresh.is_account_busy(r["last_status"]):
+            blocked += 1
+        elif r["enabled"]:
             pairs.append((r["group_id"], r["id"]))
             enabled_rows.append(dict(r))
         else:
             blocked += 1
     if not pairs:
+        if blocked:
+            return {"ok": True, "queued": 0, "blocked": blocked,
+                    "message": "所选账号正在运行或排队，请稍后再试"}
         raise HTTPException(409, "所选账号均已停用，仅允许编辑/删除")
-    openai_rows = [r for r in enabled_rows if requires_openai_credentials(r["login_type"])]
-    if openai_rows:
+    if enabled_rows:
         missing = [
             f"#{r['id']} {r['username']}"
             + ("（缺密码）" if not r["password"] else "")
-            + ("（缺2FA）" if not r["totp_secret"] else "")
-            for r in openai_rows if not r["password"] or not r["totp_secret"]
+            + ("（2FA密钥无效）" if r["totp_secret"] and not _has_valid_totp(r["totp_secret"]) else "")
+            for r in enabled_rows
+            if not r["password"]
+            or (r["totp_secret"] and not _has_valid_totp(r["totp_secret"]))
         ]
         if missing:
             raise HTTPException(
-                400, "以下账号未配置密码或2FA，请先编辑账号: " + "、".join(missing))
+                400, "以下账号未配置密码，或2FA密钥无效（2FA可选）: " + "、".join(missing))
 
     by_group: dict[int, list[int]] = {}
     for gid, aid in pairs:
@@ -238,10 +272,10 @@ async def batch_delete_accounts(body: BatchDeleteBody):
     if not selected:
         raise HTTPException(404, "所选账号不存在")
 
-    running = [dict(r) for r in selected if r["last_status"] == "running"]
+    running = [dict(r) for r in selected if token_refresh.is_account_busy(r["last_status"])]
     if running:
         names = "、".join(f"#{r['id']} {r['username']}" for r in running)
-        raise HTTPException(409, f"账号正在运行，不能删除: {names}")
+        raise HTTPException(409, f"账号正在运行或排队，不能删除: {names}")
 
     deletable_ids = [r["id"] for r in selected]
     cur = await db.execute(
@@ -259,9 +293,11 @@ async def batch_delete_accounts(body: BatchDeleteBody):
 @router.post("/{account_id}/regenerate-fingerprint")
 async def regenerate_fingerprint(account_id: int):
     db = await database.get_db()
-    row = await db.execute("SELECT id FROM accounts WHERE id=?", (account_id,))
-    if not await row.fetchone():
+    row = await db.execute("SELECT id, last_status FROM accounts WHERE id=?", (account_id,))
+    account = await row.fetchone()
+    if not account:
         raise HTTPException(404, "account not found")
+    _reject_busy(account["last_status"])
     fp = fp_mod.generate_fingerprint()
     await db.execute("UPDATE accounts SET fingerprint=? WHERE id=?",
                      (json.dumps(fp, ensure_ascii=False), account_id))
@@ -284,12 +320,41 @@ async def fp_check(account_id: int):
         raise HTTPException(404, "account not found")
     if not a["enabled"]:
         raise HTTPException(409, "账号已停用，仅允许编辑/删除")
+    _reject_busy(a["last_status"])
     # gate: refuse to start when no check URL is configured (group > setting)
     url = await fpcheck.account_check_url(account_id)
     if not url:
         raise HTTPException(400, fpcheck.NO_URL_MSG)
     fpcheck.start_check(account_id)
     return {"ok": True, "status": "检测中"}
+
+
+@router.post("/{account_id}/refresh-token")
+async def refresh_token(account_id: int):
+    """Refresh one account now; the account button bypasses the 30-minute gate."""
+    db = await database.get_db()
+    row = await (await db.execute(
+        """SELECT a.*, g.login_type, g.login_url, g.upstream_key
+           FROM accounts a JOIN groups g ON g.id=a.group_id WHERE a.id=?""",
+        (account_id,))).fetchone()
+    if not row:
+        raise HTTPException(404, "account not found")
+    if not row["enabled"]:
+        raise HTTPException(409, "账号已停用，仅允许编辑/删除")
+    if not token_refresh.adapter_supports_refresh(
+            get_adapter(row["login_type"])()):
+        raise HTTPException(400, f"登录类型 {row['login_type']} 不支持刷新 Token")
+    if (row["remote_status"] or "").strip() != "正常":
+        raise HTTPException(409, "仅上游状态为「正常」的账号可以刷新 Token")
+    if not token_refresh.has_valid_expiry(row):
+        raise HTTPException(400, "账号缺少可识别的 Token 过期时间，请先同步账号")
+    if token_refresh.is_account_busy(row["last_status"]):
+        raise HTTPException(409, "账号正在上号或刷新 Token，请稍后再试")
+    if token_refresh.is_active():
+        raise HTTPException(409, "已有 Token 刷新队列正在执行，请稍后再试")
+    if not await token_refresh.queue_refresh([account_id]):
+        raise HTTPException(409, "已有 Token 刷新队列正在执行，请稍后再试")
+    return {"ok": True, "status": "刷新Token队列中"}
 
 
 @router.get("/{account_id}/tasks")

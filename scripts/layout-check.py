@@ -189,13 +189,11 @@ def audit_groups(data, label):
         first_row = [c for c in cards if c["top"] == cards[0]["top"]]
         check(all(c["top"] == first_row[0]["top"] for c in first_row), "首行分组卡顶部对齐")
         check(all(c["w"] == first_row[0]["w"] for c in first_row), "首行分组卡等宽")
-        check(all(c["btnCount"] == 7 for c in cards),
-              "每张卡片 7 个操作按钮（5 个基础 + 打开/关闭浏览器）（实际 %s）" % sorted({c["btnCount"] for c in cards}))
-        # 本地 SDK 专属按钮：未配置 CDP 时均应显示；此处服务无 CDP，应有且仅各 1 个
-        check(all(c["openBtn"] == 1 for c in cards),
-              "本地 SDK 模式下每卡出现 1 个「打开浏览器」按钮（实际 %s）" % sorted({c["openBtn"] for c in cards}))
-        check(all(c["closeBtn"] == 1 for c in cards),
-              "本地 SDK 模式下每卡出现 1 个「关闭浏览器」按钮（实际 %s）" % sorted({c["closeBtn"] for c in cards}))
+        # 5 个基础按钮 + 本地 SDK 专属打开/关闭浏览器；CDP 模式下这两个按钮都隐藏。
+        check(all(c["openBtn"] == c["closeBtn"] and c["btnCount"] == 5 + c["openBtn"] * 2
+                  for c in cards),
+              "浏览器按钮按引擎成对显隐（本地 7 个 / CDP 5 个）（实际 %s）"
+              % sorted({(c["btnCount"], c["openBtn"], c["closeBtn"]) for c in cards}))
         check(all(c["toggleW"] == 30 and c["toggleH"] == 30 for c in cards),
               "展开箭头复用 .icon-btn 尺寸 30×30（实际 %s）" % sorted({(c["toggleW"], c["toggleH"]) for c in cards}))
 
@@ -208,7 +206,7 @@ def audit_groups(data, label):
         uniq_r = sorted(set(data["actionBtnRadius"]))
         print("\n操作区按钮 共 %d 个 ｜ 高度 %s ｜ 左内边距 %s ｜ 圆角 %s"
               % (len(data["actionBtnH"]), uniq_h, uniq_pad, uniq_r))
-        check(len(uniq_h) == 1 and uniq_h[0] == 32, "操作区按钮高度一致且为 .btn-sm（%s）" % uniq_h)
+        check(len(uniq_h) == 1 and uniq_h[0] == 28, "操作区按钮高度一致且为紧凑 28px（%s）" % uniq_h)
         check(len(uniq_pad) == 1, "操作区按钮水平内边距一致（%s）" % uniq_pad)
         check(len(uniq_r) == 1, "操作区按钮圆角一致（%s）" % uniq_r)
 
@@ -346,7 +344,7 @@ def audit_settings(data, label):
 
     print("\n卡片总数:", total)
     print("水平溢出:", data["overflow"] if data["overflow"] else "无")
-    check(total == 6, "设置卡数量 = 6")
+    check(total == 7, "设置卡数量 = 7")
     check(not data["overflow"], "卡片内无水平溢出")
 
 
