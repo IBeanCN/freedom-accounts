@@ -30,6 +30,7 @@ _account_state_lock = asyncio.Lock()
 _RUN_TASKS: set[asyncio.Task] = set()
 _RUN_TASK_BY_ACCOUNT: dict[int, asyncio.Task] = {}
 _EXECUTE_TASK_BY_ACCOUNT: dict[int, asyncio.Task] = {}
+_EXECUTE_LAUNCHING: set[int] = set()
 # Queue entries carry a generation so a stopped stale item can never execute
 # after the same account is immediately queued again.
 _account_generations: dict[int, int] = {}
@@ -271,19 +272,34 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 "detail": browser_mod.mask_proxy_server(proxy_server), "ok": True,
             })
         try:
-            closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
-                fp, mode, profile_key=f"g{group_id}_a{account_id}",
-                proxy_server=proxy_server)
+            _EXECUTE_LAUNCHING.add(account_id)
+            try:
+                closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
+                    fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                    proxy_server=proxy_server)
+            finally:
+                _EXECUTE_LAUNCHING.discard(account_id)
         except browser_mod.SessionLimitError as e:
             # 撞套餐会话上限（通常是手动"打开浏览器"窗口占座）：自动关掉
             # 手动窗口并重试一次；仍失败才落为任务失败。
             steps.append({"t": _now(), "step": "session_limit",
                           "detail": "自动关闭已打开的指纹浏览器窗口后重试", "ok": True})
             await browser_mod.reclaim_manual_sessions()
-            closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
-                fp, mode, profile_key=f"g{group_id}_a{account_id}",
-                proxy_server=proxy_server)
+            _EXECUTE_LAUNCHING.add(account_id)
+            try:
+                closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
+                    fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                    proxy_server=proxy_server)
+            finally:
+                _EXECUTE_LAUNCHING.discard(account_id)
         steps.append({"t": _now(), "step": "browser_launched", "detail": engine_used, "ok": True})
+        fp_applied = json.loads(fp_json) if fp_json and fp_json != "{}" else {}
+        if fp_applied:
+            _fp_brief = {k: fp_applied[k] for k in
+                         ("seed", "platform", "brand", "brand_version",
+                          "timezone", "locale") if k in fp_applied}
+            steps.append({"t": _now(), "step": "fingerprint_detail",
+                          "detail": json.dumps(_fp_brief, ensure_ascii=False), "ok": True})
 
         try:
             result = await flows.run_flow(g["login_type"], ctx, a["username"], password,
@@ -374,6 +390,11 @@ async def stop_account(account_id: int) -> str:
 
     cancel_task = execute_task or task
     if cancel_task is not None and not cancel_task.done():
+        # Don't inject cancellation into a launcher's internal await; partial
+        # engine startup may not have a closer yet. Wait for the safe boundary.
+        while (execute_task is not None and not execute_task.done()
+               and account_id in _EXECUTE_LAUNCHING):
+            await asyncio.sleep(0.05)
         cancel_task.cancel()
         try:
             await cancel_task

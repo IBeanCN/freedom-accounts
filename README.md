@@ -1,4 +1,4 @@
-# freedom-accounts · 批量上号平台
+# freedom-accounts
 
 账号批量上号平台：分组管理 + 指纹浏览器（[CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 方案）+ Playwright 页面自动化 + 流程适配器。Python FastAPI + asyncio 协程并发 + SQLite，开箱即用。
 

@@ -146,6 +146,12 @@ async def _launch_cloakserve(cdp_url: str, fp: dict, ctx_kwargs: dict,
         _engine_last_error = f"cloakserve connect failed: {e}"
         raise
 
+    # CDP 远程连接不走 SDK 的 launch(humanize=True)，手动打补丁。
+    if HAS_CLOAK:
+        from cloakbrowser.human import patch_browser_async
+        from cloakbrowser.human.config import HumanConfig
+        patch_browser_async(browser, HumanConfig())
+
     context = browser.contexts[0] if browser.contexts else await browser.new_context(**ctx_kwargs)
 
     async def close_remote():
@@ -170,7 +176,8 @@ async def _launch_cloak_sdk(cmd_args: list[str], ctx_kwargs: dict,
     # License key comes from .env only (config.CLOAKBROWSER_LICENSE_KEY);
     # editing it requires a service restart, by design.
     license_key = config.CLOAKBROWSER_LICENSE_KEY or None
-    kwargs = dict(headless=headless, args=cmd_args, license_key=license_key)
+    kwargs = dict(headless=headless, args=cmd_args, license_key=license_key,
+                  humanize=True)
     if proxy_server:
         # Playwright-compatible proxy option (also understood by the SDK)
         kwargs["proxy"] = {"server": proxy_server}
