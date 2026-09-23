@@ -4,6 +4,7 @@ Run:  uvicorn app.main:app --host 127.0.0.1 --port 8000
       python -m app.main
 """
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -15,6 +16,11 @@ from .automation import browser, fpcheck, scheduler, token_refresh
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 @asynccontextmanager

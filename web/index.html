@@ -314,6 +314,46 @@
               </div>
             </div>
 
+            <div class="setting-card">
+              <div class="setting-head">
+                <h3 class="setting-title">手机号验证</h3>
+                <p class="setting-desc">OpenAI 授权进入 add-phone 时选择手动等待或接码 API 自动完成。</p>
+              </div>
+              <div class="setting-body">
+                <div class="segmented" id="phone-verification-mode-seg" role="group" aria-label="手机号验证模式">
+                  <button class="segmented-item" type="button" data-mode="manual">手动</button>
+                  <button class="segmented-item" type="button" data-mode="auto">自动</button>
+                </div>
+                <label class="field" id="phone-auto-fields" hidden>
+                  <span class="field-label">接码平台</span>
+                  <select id="phone-platform" class="select">
+                    <option value="hero_sms">HeroSMS</option>
+                  </select>
+                </label>
+                <label class="field" id="phone-auto-key" hidden>
+                  <span class="field-label">API Key</span>
+                  <input id="phone-api-key" class="input" type="password" autocomplete="new-password">
+                  <span class="field-hint">Key 加密保存；留空表示不修改已有 Key</span>
+                </label>
+                <label class="field" id="phone-auto-country" hidden>
+                  <span class="field-label">国家列表</span>
+                  <input id="phone-country-search" class="input" placeholder="搜索国家..." autocomplete="off">
+                  <input type="hidden" id="phone-country-value">
+                  <div id="phone-country-list" class="phone-country-list" hidden></div>
+                </label>
+                <label class="field" id="phone-auto-page-country" hidden>
+                  <span class="field-label">国家编码</span>
+                  <select id="phone-page-country" class="select"></select>
+                </label>
+                <p class="setting-note" id="phone-balance-note" hidden></p>
+                <p class="setting-note" id="phone-test-error" hidden></p>
+                <p class="setting-note" id="phone-auto-note" hidden>自动流程会查余额、获取号码、轮询验证码并确认收到；配置不完整或平台调用失败时回退手动。</p>
+              </div>
+              <div class="setting-foot">
+                <button id="btn-save-phone-verification" class="btn btn-primary btn-sm" type="button">保存</button>
+              </div>
+            </div>
+
           </div>
         </section>
 
@@ -539,6 +579,11 @@
           <span class="field-hint">组内账号未单独配置代理时，浏览器将通过该代理访问站点</span>
         </label>
         <label class="field">
+          <span class="field-label">接码平台（账号可覆盖）</span>
+          <select id="g-phone_platform" class="select"></select>
+          <span class="field-hint">仅系统设置切为「自动」时生效</span>
+        </label>
+        <label class="field">
           <span class="field-label">指纹检测站点（可选，覆盖系统设置）</span>
           <input id="g-fp_check_url" class="input" placeholder="留空使用系统设置地址">
         </label>
@@ -693,6 +738,10 @@
                 <option value="headless">无头</option>
                 <option value="headed">有头</option>
               </select>
+            </label>
+            <label class="field">
+              <span class="field-label">接码平台</span>
+              <select id="a-phone_platform" class="select"></select>
             </label>
             <div class="field">
               <span class="field-label">关联代理</span>

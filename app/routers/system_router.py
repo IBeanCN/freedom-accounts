@@ -2,12 +2,14 @@
 import ipaddress
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..core import database, settings
+from ..core import crypto, database, settings
 from ..core import tasks
 from ..automation import browser as browser_mod
+from ..automation.phone import get_phone_adapter
+from ..automation.phone.countries import COUNTRY_BY_ISO2
 from .deps import require_admin
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -69,6 +71,12 @@ class SettingsBody(BaseModel):
     token_refresh_interval_seconds: int | None = Field(
         default=None, ge=60, le=2_592_000)
     fp_check_url: str | None = None
+    phone_verification_mode: str | None = Field(
+        default=None, pattern="^(manual|auto)$")
+    phone_verification_platform: str | None = None
+    phone_verification_country: str | None = Field(default=None, max_length=16)
+    phone_verification_page_country: str | None = Field(default=None, max_length=2)
+    phone_verification_api_key: str | None = None
     default_geo_country: str | None = Field(default=None, max_length=2)
     default_geo_region: str | None = None
     default_geo_city: str | None = None
@@ -94,6 +102,12 @@ async def get_settings(_: None = Depends(require_admin)):
         "log_retention_days": retention,
         "token_refresh_interval_seconds": token_interval,
         "fp_check_url": await settings.get("fp_check_url") or "",
+        "phone_verification_mode": await settings.get("phone_verification_mode") or "manual",
+        "phone_verification_platform": await settings.get("phone_verification_platform") or "hero_sms",
+        "phone_verification_country": await settings.get("phone_verification_country") or "",
+        "phone_verification_page_country": await settings.get("phone_verification_page_country") or "",
+        "phone_verification_api_key_set": bool(
+            await settings.get("phone_verification_api_key")),
         "default_geo_country": await settings.get("default_geo_country") or "",
         "default_geo_region": await settings.get("default_geo_region") or "",
         "default_geo_city": await settings.get("default_geo_city") or "",
@@ -105,8 +119,101 @@ async def get_settings(_: None = Depends(require_admin)):
     }
 
 
+async def _resolve_api_key(api_key_override: str = "") -> str:
+    """Caller-provided key wins; otherwise fall back to the saved encrypted key."""
+    if api_key_override.strip():
+        return api_key_override.strip()
+    encrypted_key = await settings.get("phone_verification_api_key") or ""
+    return crypto.decrypt(encrypted_key) if encrypted_key else ""
+
+
+async def _list_phone_countries(platform: str, api_key: str) -> list[dict]:
+    """Read provider countries; raises so the caller can report the reason."""
+    if not platform or not api_key:
+        return []
+    adapter = get_phone_adapter(platform)()
+    countries = await adapter.get_countries(api_key)
+    normalized: dict[str, dict] = {}
+    for item in countries:
+        code = str(getattr(item, "code", "") or "").strip()
+        if not code:
+            continue
+        name = str(getattr(item, "name", "") or "").strip()
+        normalized.setdefault(code.upper(), {"code": code, "name": name})
+    return sorted(normalized.values(),
+                  key=lambda item: (item["name"] or item["code"]).lower())
+
+
+@router.get("/settings/phone-countries")
+async def get_phone_countries(platform: str = "",
+                              api_key: str = "",
+                              _: None = Depends(require_admin)):
+    if not platform.strip():
+        platform = await settings.get("phone_verification_platform") or ""
+    key = await _resolve_api_key(api_key)
+    try:
+        countries = await _list_phone_countries(platform, key)
+    except Exception as e:
+        return {"countries": [], "error": str(e)}
+    return {"countries": countries}
+
+
+@router.get("/settings/phone-balance")
+async def get_phone_balance(platform: str = "",
+                            api_key: str = "",
+                            _: None = Depends(require_admin)):
+    """Query the provider balance; optional api_key overrides the saved key."""
+    if not platform.strip():
+        platform = await settings.get("phone_verification_platform") or ""
+    key = await _resolve_api_key(api_key)
+    if not platform or not key:
+        return {"balance": ""}
+    try:
+        adapter = get_phone_adapter(platform)()
+        return {"balance": await adapter.get_balance(key)}
+    except Exception as e:
+        raise HTTPException(502, f"余额查询失败: {e}")
+
+
+@router.get("/settings/page-countries")
+async def get_page_countries(_: None = Depends(require_admin)):
+    """Return OpenAI page countries separately from SMS-provider country IDs."""
+    countries = [
+        {"code": iso2, "name": info["zh"] or info["en"], "dial_code": info["dial_code"]}
+        for iso2, info in COUNTRY_BY_ISO2.items()
+    ]
+    countries.sort(key=lambda item: (item["name"], item["code"]))
+    return {"countries": countries}
+
+
 @router.put("/settings")
 async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
+    if body.phone_verification_mode == "auto":
+        platform = body.phone_verification_platform
+        platform = (platform if platform is not None
+                    else await settings.get("phone_verification_platform") or "hero_sms")
+        try:
+            get_phone_adapter(platform)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        country = body.phone_verification_country
+        country = (country if country is not None
+                   else await settings.get("phone_verification_country")).strip()
+        raw_key = (body.phone_verification_api_key if body.phone_verification_api_key is not None
+                   else await settings.get("phone_verification_api_key"))
+        api_key = crypto.decrypt(raw_key or "").strip()
+        if not country:
+            raise HTTPException(400, "自动手机号验证需要选择国家")
+        if not api_key:
+            raise HTTPException(400, "自动手机号验证需要 API Key")
+        page_country = body.phone_verification_page_country
+        page_country = (page_country if page_country is not None
+                        else await settings.get("phone_verification_page_country") or "")
+        page_country = page_country.strip().upper()
+        if len(page_country) != 2 or not page_country.isalpha():
+            raise HTTPException(400, "自动手机号验证需要两位国家编码")
+        if page_country not in COUNTRY_BY_ISO2:
+            raise HTTPException(400, f"不支持的国家编码: {page_country}")
     if body.global_browser_mode:
         await settings.set_value("global_browser_mode", body.global_browser_mode)
     if body.cloak_cdp_url is not None:
@@ -118,6 +225,22 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
             "token_refresh_interval_seconds", str(body.token_refresh_interval_seconds))
     if body.fp_check_url is not None:
         await settings.set_value("fp_check_url", body.fp_check_url.strip())
+    if body.phone_verification_mode is not None:
+        await settings.set_value("phone_verification_mode", body.phone_verification_mode)
+    if body.phone_verification_platform is not None:
+        await settings.set_value(
+            "phone_verification_platform", body.phone_verification_platform.strip())
+    if body.phone_verification_country is not None:
+        await settings.set_value(
+            "phone_verification_country", body.phone_verification_country.strip())
+    if body.phone_verification_page_country is not None:
+        await settings.set_value(
+            "phone_verification_page_country",
+            body.phone_verification_page_country.strip().upper())
+    if body.phone_verification_api_key is not None:
+        await settings.set_value(
+            "phone_verification_api_key",
+            crypto.ensure_encrypted(body.phone_verification_api_key.strip()))
     for key in ("default_geo_country", "default_geo_region", "default_geo_city",
                 "default_geo_timezone", "default_geo_locale"):
         val = getattr(body, key)
@@ -221,6 +344,63 @@ def _geo_parse(ip: str, d: dict) -> dict:
 
 
 # ---------------- log maintenance ----------------
+
+@router.get("/settings/phone-dom-check")
+async def phone_dom_check(_: None = Depends(require_admin)):
+    """Probe add-phone selectors on the first active managed browser page."""
+    page = (browser_mod.get_first_managed_page() or browser_mod.get_first_task_page())
+    if page is None:
+        return {"ok": False, "url": "",
+                "error": "没有活跃的指纹浏览器会话，请先打开浏览器",
+                "checks": []}
+    checks = []
+    for sel in ['div[data-trigger="Select"]', '[role="listbox"]',
+                'div[role="option"]', 'input#tel',
+                'input[type="radio"][value="sms"]']:
+        try:
+            loc = page.locator(sel)
+            count = await loc.count()
+            sample = ""
+            if count and "option" in sel:
+                sample = (await loc.first.text_content() or "")[:80]
+            checks.append({"selector": sel, "count": count, "sample": sample})
+        except Exception as e:
+            checks.append({"selector": sel, "count": -1, "error": str(e)[:200]})
+    # Dump the HTML structure around input#tel to find the area code selector
+    try:
+        dom_explore = await page.evaluate("""() => {
+            const tel = document.querySelector('input#tel');
+            if (!tel) return [{error: 'input#tel not found'}];
+            let container = tel.parentElement;
+            for (let i = 0; i < 4 && container; i++) {
+                if (container.querySelectorAll('div,span,button,select').length > 3) break;
+                container = container.parentElement;
+            }
+            return [{html: container ? container.outerHTML.slice(0, 3000) : 'no container'}];
+        }""")
+    except Exception as e:
+        dom_explore = [{"error": str(e)[:200]}]
+    return {"ok": True, "url": page.url, "checks": checks, "dom_explore": dom_explore}
+
+
+class PageExecBody(BaseModel):
+    js: str = Field(min_length=1)
+
+
+@router.post("/settings/phone-page-exec")
+async def phone_page_exec(body: PageExecBody,
+                          _: None = Depends(require_admin)):
+    """Execute arbitrary JS on the active managed browser page (diagnostic)."""
+    page = (browser_mod.get_first_managed_page() or browser_mod.get_first_task_page())
+    if page is None:
+        raise HTTPException(404, "没有活跃的指纹浏览器会话")
+    try:
+        result = await page.evaluate(body.js)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:500]}
+
+
 @router.post("/logs/prune")
 async def prune_logs_now(_: None = Depends(require_admin)):
     """Manually sweep expired logs (normally done hourly by the pruner)."""

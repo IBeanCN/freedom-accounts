@@ -67,17 +67,17 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET | `/api/auth/me` | 当前用户（未登录返回 401） |
 | POST | `/api/auth/change-password` | 修改管理员密码 |
 | GET | `/api/meta` | 注册表下发：`login_types`（流程适配器）/ `group_types`（平台注册表），驱动前端下拉 |
-| GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理） |
+| GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理、`phone_platform` 分组级接码平台，空值跟随系统设置） |
 | PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`）/ 删除分组 |
 | POST | `/api/groups/{id}/start` | 分组一键执行；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且入队上游状态 `error` 或无上游账号 ID 的本地手动启用账号。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/groups/{id}/open-browser` | 打开常驻交互浏览器（本地 SDK 引擎专用：配置了 `cloak_cdp_url` 时 409 拒绝）。用分组指纹模板（无模板则全随机，seed 必随机）+ 分组代理、有头模式；按组幂等（`reused:true` 表示复用已开窗口），不自动关闭，`/close-browser` 或服务停止时关闭 |
 | POST | `/api/groups/{id}/close-browser` | 关闭该分组的常驻交互浏览器（无会话时 `closed:false`，幂等） |
 | POST | `/api/groups/{id}/regenerate-fingerprints` | 批量换指纹（`mode`: seed_only / from_template / random；body 可选 `account_ids`，有值只改选中账号，空/缺省改全部账号） |
-| POST | `/api/groups/{id}/sync-accounts` | 同步上游账号，身份键=上游 `remote_id`：已存在→仅更新上游字段（username 显示名取 email、`remote_status`/`remote_remark` 独立列；密码/2FA/指纹/代理等本地属性不动）；上游没有的 synced 行删除；新增按分组指纹模板落库；与上游账号（email/用户名）重复的本地账号全部停用（body 可选 `dry_run`，返回含 `disabled` 计数）。上游状态由适配器转中文（normal/quota_exhausted/rate_limited/disabled/error/refresh_backoff → 正常/配额耗尽/限流中/已停用/错误/退避中），仅展示、不影响本地 enabled |
+| POST | `/api/groups/{id}/sync-accounts` | 同步上游账号，身份键=上游 `remote_id`：已存在→仅更新上游字段（username 显示名取 email、`remote_status`/`remote_remark` 独立列；密码/2FA/指纹/代理等本地属性不动）；唯一本地手动行与唯一上游 email/用户名身份一一匹配时回填 `remote_id` 和上游字段，避免重复新建；上游没有的 synced 行删除；新增按分组指纹模板落库；歧义匹配及与上游账号重复的本地账号全部停用（body 可选 `dry_run`，返回含 `disabled` 计数）。上游状态由适配器转中文（normal/quota_exhausted/rate_limited/disabled/error/refresh_backoff → 正常/配额耗尽/限流中/已停用/错误/退避中），仅展示、不影响本地 enabled |
 | POST | `/api/groups/{id}/refresh-tokens` | 一键刷新 Token；先同步上游，再按 `account_ids`（空/缺省=全部）筛选启用且上游状态「正常」的账号。批量只处理 Token 已可解析、剩余寿命 ≤30 分钟且非四种运行态的账号，账号间随机间隔 5–20 秒；全局只允许一个 Token 刷新队列，执行过程写入 `operation=token_refresh` 任务日志并回写 `token_refresh_result` / `token_refresh_at` / 新过期时间 |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | POST | `/api/groups/{id}/fp-check/stop` | 停止分组指纹模板检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
-| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组代理和分组指纹模板） |
+| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/start` | 按账号批量执行任务（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
@@ -93,7 +93,10 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET / POST | `/api/proxies` | 代理列表（含 `linked_accounts` 关联数与 `server_masked` 掩码地址）/ 新建（`name`、`server`、`custom_geo`、`country/region/city/timezone/locale`） |
 | PUT / DELETE | `/api/proxies/{id}` | 更新（`server` 留空保留原地址）/ 删除（仍被账号关联时返回 409） |
 | POST | `/api/proxies/{id}/test` | 测试连接：经代理请求 ipify 检测出口 IP 与耗时，后台执行，结果写回 `exit_ip` / `latency_ms` / `check_at` / `check_error` |
-| GET / PUT | `/api/settings` | 系统设置读写（含 `log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填） |
+| GET / PUT | `/api/settings` | 系统设置读写（含 `log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`phone_verification_mode` OpenAI 手机号验证模式，默认 `manual`；`auto` 必须配置国家与加密 Key，运行时缺失自动回退 manual；`phone_verification_platform` 默认接码平台，分组 `phone_platform` 空值时生效；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填） |
+| GET | `/api/settings/phone-countries` | 读取当前接码适配器的 `get_countries`；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key；返回 `{countries:[{code,name}]}`。Key 缺失或调用失败时返回空数组 |
+| GET | `/api/settings/phone-balance` | 查询接码平台余额；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key，返回 `{balance}`。无 Key 或平台不支持返回空字符串 |
+| GET | `/api/settings/page-countries` | 读取 OpenAI 页面国家映射；返回 `{countries:[{code,name,dial_code}]}`，`code` 是两位 ISO 国家编码，区别于接码平台国家 ID |
 | GET | `/api/geo/lookup` | IP 地理解析（ipwho.is，仅代理弹窗「按出口 IP 解析」使用）：`?ip=` 指定地址；不带参数时先经 ipify 取本机出口 IP 再解析，ipify 不可达时回退裸 `ipwho.is`。返回 `{ok, ip, country, region, city, timezone, locale, error}`（locale 按国家代码映射 BCP47，未知回退 en-US） |
 | POST | `/api/logs/prune` | 手动触发日志清理（正常由后台每小时自动清理） |
 
@@ -132,13 +135,14 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，执行任务时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
 
-- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps, *, cdp_engine=False, phone_handler=None)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **手机号验证门**：精确匹配 `https://auth.openai.com/add-phone`（忽略 query/hash）。CDP 环境立即终止任务；本地 SDK 保持页面不动、不点 Continue，无限等待用户输入手机号/验证码，URL 离开该页后重置回调等待并继续。自动接码平台统一实现 `automation/phone/base.py` 的 `get_balance` / `get_number` / `get_code` / `confirm_received`，返回规范 `PhoneOrder(phone, provider_order_id)`；注册表在 `automation/phone/registry.py`，当前仅登记 HeroSMS 骨架（底层协议未实现）。系统设置 `phone_verification_mode=auto` 且平台/国家/Key 齐全时，调度器注入 `_phone_verification.provider_phone_verification`；平台不支持、配置缺失或自动执行失败时回退手动。`phone_handler(page, email, steps)` 仍是自动服务的注入点。
 - **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键执行；CPR 请求授权链接时省略 `accountId`。
 - **执行冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。
 - **上游差异只在凭证操作**：
   - sub2api：`POST {login_url}/api/v1/openai/generate-auth-url {account_id}` → `{session_id, auth_url}`；`POST /openai/exchange-code {code, state, session_id}`（重试 5 次）；成功后 best-effort `recover-state` + `schedulable`。Header `x-api-key`；响应 envelope 宽容解析；账号按 email 匹配、`accounts.remote_id` 优先；`refresh_token` 未实现（上游无端点）。
   - cpr：`POST /api/admin/accounts/oauth/start` → `{flowId, authorizationUrl}`；`POST /api/admin/accounts/oauth/complete {flowId, callbackUrl}`；见文件头 wire contract。
-- **flow 签名扩展**：`run_flow(..., group=..., account=...)` 把分组/账号行透传给 flow（registry.py，`TypeError` 兜底老 6 参签名）。scheduler 是唯一调用方。
+- **flow 签名扩展**：`run_flow(..., group=..., account=..., cdp_engine=...)` 把分组/账号行和引擎策略透传给 flow。scheduler 是唯一调用方。
 - `upstream_key`（上游 API Key）必填，缺失时任务/同步均报错提示。sub2api 的 `login_url` 填站点根（自动补 `/api/v1/admin` 前缀，已带则原样）。
 
 ---

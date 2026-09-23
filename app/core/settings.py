@@ -8,6 +8,11 @@ SETTING_DEFAULTS = {
     "log_retention_days": "3",          # adapter_logs & task logs older than this are pruned
     "token_refresh_interval_seconds": "3600", # scheduled upstream token refresh interval
     "fp_check_url": "https://fuck-claude.com/zh/",  # fingerprint risk-check site; group may override
+    "phone_verification_mode": "manual",  # manual | auto; auto requires the API fields
+    "phone_verification_platform": "hero_sms",
+    "phone_verification_country": "",
+    "phone_verification_page_country": "",  # OpenAI page country (ISO 3166-1 alpha-2)
+    "phone_verification_api_key": "",     # encrypted at write time
     # global geo defaults: prefilled into the proxy form when "自定义时区位置"
     # is switched on; manually editable or auto-filled from exit-IP lookup
     "default_geo_country": "",

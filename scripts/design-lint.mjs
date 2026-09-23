@@ -317,6 +317,11 @@ const API_ALLOWLIST = [
   "/api/proxies/:id/test",
   "/api/geo/lookup",
   "/api/settings",
+  "/api/settings/phone-countries",
+  "/api/settings/phone-balance",
+  "/api/settings/page-countries",
+  "/api/settings/phone-dom-check",
+  "/api/settings/phone-page-exec",
   "/api/logs/prune",
 ];
 {

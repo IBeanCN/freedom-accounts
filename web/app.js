@@ -64,6 +64,15 @@ function safeJson(v, fallback) {
   try { return JSON.parse(v); } catch (_) { return fallback; }
 }
 
+/** 新增账号时清理复制带来的结尾噪声；密码可能含任意字符，不参与清洗。 */
+function trimAccountTail(value) {
+  return String(value ?? "").trim().replace(/[^\w@.%+-]+$/g, "");
+}
+
+function trimTotpTail(value) {
+  return String(value ?? "").trim().replace(/[^A-Za-z2-7=]+$/g, "");
+}
+
 /** 空对象 / 空数组视为「无内容」，避免详情里出现一个孤零零的 {} */
 function isEmpty(v) {
   if (!v) return true;
@@ -681,6 +690,7 @@ function openGroupModal(g = null) {
   $("#g-browser_mode").value = g?.browser_mode || "inherit";
   $("#g-fp_check_url").value = g?.fp_check_url || "";
   fillProxySelect(g?.proxy_id || "", "#g-proxy_id", "不使用代理（直连）");
+  fillPhonePlatformSelect($("#g-phone_platform"), { saved: g?.phone_platform || "" });
   fillTplForm(g?.fingerprint_template || {});
   syncGroupTypeHints();
   $("#dlg-group").showModal();
@@ -948,6 +958,7 @@ $("#form-group").addEventListener("submit", async (e) => {
     browser_mode: $("#g-browser_mode").value,
     fp_check_url: $("#g-fp_check_url").value.trim(),
     proxy_id: $("#g-proxy_id").value ? +$("#g-proxy_id").value : null,
+    phone_platform: $("#g-phone_platform").value,
     fingerprint_template: readTplForm(),
   };
   // 指纹模板任一字段变化时二次确认（新建无原值，不弹）
@@ -1447,6 +1458,7 @@ function openAccountModal(a = null) {
   $("#a-password").value = "";
   $("#a-totp").value = "";
   $("#a-browser_mode").value = a?.browser_mode || "inherit";
+  fillPhonePlatformSelect($("#a-phone_platform"), { mode: "account", saved: a?.phone_platform || "" });
   $("#a-enabled").checked = a ? !!a.enabled : true;
   $("#a-enabled").value = a && !a.enabled ? "0" : "1";
   $("#a-remark").value = a?.remark || "";
@@ -1607,13 +1619,22 @@ function parseBulkAccounts(text) {
       errors.push(`第 ${index + 1} 行格式应为：邮箱|密码|2FA密钥`);
       return;
     }
-    const email = parts[0].toLowerCase();
+    const username = trimAccountTail(parts[0]);
+    if (!username) {
+      errors.push(`第 ${index + 1} 行格式应为：邮箱|密码|2FA密钥`);
+      return;
+    }
+    const email = username.toLowerCase();
     if (emails.has(email)) {
       duplicates += 1;
       return;
     }
     emails.add(email);
-    rows.push({ username: parts[0], password: parts[1], totp_secret: parts[2] || "" });
+    rows.push({
+      username,
+      password: parts[1],
+      totp_secret: trimTotpTail(parts[2] || ""),
+    });
   });
   return { rows, errors, duplicates };
 }
@@ -1623,6 +1644,7 @@ $("#form-account").addEventListener("submit", async (e) => {
   const shared = {
     group_id: state.currentGroup,
     browser_mode: $("#a-browser_mode").value,
+    phone_platform: $("#a-phone_platform").value,
     fingerprint: readFpForm(),
     enabled: $("#a-enabled").value === "1",
     remark: $("#a-remark").value.trim(),
@@ -1664,9 +1686,13 @@ $("#form-account").addEventListener("submit", async (e) => {
 
   const body = {
     ...shared,
-    username: $("#a-username").value.trim(),
+    username: state.editingAccount
+      ? $("#a-username").value.trim()
+      : trimAccountTail($("#a-username").value),
     password: $("#a-password").value || (state.editingAccount ? "__KEEP_OLD__" : ""),
-    totp_secret: $("#a-totp").value.trim() || (state.editingAccount ? "__CLEAR__" : ""),
+    totp_secret: state.editingAccount
+      ? ($("#a-totp").value.trim() || "__CLEAR__")
+      : trimTotpTail($("#a-totp").value),
   };
   if (!body.password) { toast("密码不能为空", true); return; }
   // 账号指纹任一字段变化时二次确认（新建无原值，不弹）
@@ -2250,6 +2276,15 @@ async function loadSettings() {
   $("#log-retention").value = s.log_retention_days ?? 3;
   $("#token-refresh-interval").value = s.token_refresh_interval_seconds ?? 3600;
   $("#fp-check-url").value = s.fp_check_url || "";
+  const phoneMode = s.phone_verification_mode || "manual";
+  $$("#phone-verification-mode-seg .segmented-item").forEach((b) => b.classList.toggle("is-active", b.dataset.mode === phoneMode));
+  togglePhoneAutoFields(phoneMode);
+  $("#phone-platform").value = s.phone_verification_platform || "hero_sms";
+  await loadPhoneCountries(s.phone_verification_country || "");
+  await loadPageCountries(s.phone_verification_page_country || "");
+  $("#phone-api-key").placeholder = s.phone_verification_api_key_set
+    ? "已配置（留空保持不变）"
+    : "未配置";
   $("#geo-country").value = s.default_geo_country || "";
   $("#geo-region").value = s.default_geo_region || "";
   $("#geo-city").value = s.default_geo_city || "";
@@ -2293,6 +2328,204 @@ $("#btn-save-cdp").addEventListener("click", async () => {
     await api("/api/settings", { method: "PUT", body: { cloak_cdp_url: $("#cloak-cdp").value.trim() } });
     toast("CDP 地址已保存");
     applyOpenBrowserVisibility($("#cloak-cdp").value);   // 立即生效，不等刷新
+    await loadSettings();
+  } catch (e) { toast(e.message, true); }
+});
+
+$("#phone-verification-mode-seg").addEventListener("click", (e) => {
+  const b = e.target.closest(".segmented-item");
+  if (!b) return;
+  $$("#phone-verification-mode-seg .segmented-item").forEach((x) => x.classList.toggle("is-active", x === b));
+  togglePhoneAutoFields(b.dataset.mode);
+});
+
+function togglePhoneAutoFields(mode) {
+  const show = mode === "auto";
+  ["#phone-auto-fields", "#phone-auto-country", "#phone-auto-page-country",
+   "#phone-auto-key", "#phone-auto-note", "#phone-balance-note",
+   "#phone-test-error"]
+  .forEach((id) => { $(id).hidden = !show; });
+  if (show && $("#phone-api-key").value.trim()) {
+    // Re-probe when switching to auto with a key already typed
+    testPhoneProvider();
+  } else if (show) {
+    // No unsaved key typed; try loading from the saved key in the DB
+    loadPhoneCountries();
+  }
+}
+
+/* Populate the phone-platform select for group / account modals from the
+   same adapter registry that the system settings card uses. */
+function fillPhonePlatformSelect(sel, { mode = "group", saved = "" } = {}) {
+  const platforms = [
+    { value: mode === "account" ? "inherit" : "", label: mode === "account" ? "跟随分组" : "跟随系统" },
+    { value: "hero_sms", label: "HeroSMS" },
+  ];
+  sel.innerHTML = "";
+  platforms.forEach(({ value, label }) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label;
+    sel.appendChild(o);
+  });
+  // keep unknown saved values visible rather than silently resetting
+  if (saved && !platforms.some((p) => p.value === saved)) {
+    const o = document.createElement("option");
+    o.value = saved; o.textContent = `${saved}（存量）`;
+    sel.appendChild(o);
+  }
+  sel.value = saved || platforms[0].value;
+}
+
+let phoneCountriesCache = [];
+
+async function loadPhoneCountries(savedCountry = "") {
+  const platform = $("#phone-platform").value;
+  const rawKey = $("#phone-api-key").value.trim();
+  const parts = [];
+  if (platform) parts.push("platform=" + encodeURIComponent(platform));
+  if (rawKey) parts.push("api_key=" + encodeURIComponent(rawKey));
+  const params = parts.length ? "?" + parts.join("&") : "";
+  try {
+    const d = await api("/api/settings/phone-countries" + params);
+    phoneCountriesCache = d.countries || [];
+    if (d.error) {
+      const errNote = $("#phone-test-error");
+      errNote.textContent = d.error;
+      errNote.hidden = false;
+    }
+    $("#phone-country-value").value = phoneCountriesCache.some(
+      (c) => c.code === savedCountry) ? savedCountry : "";
+    const sel = phoneCountriesCache.find((c) => c.code === savedCountry);
+    $("#phone-country-search").value = sel
+      ? (sel.name ? `${sel.name}（${sel.code}）` : sel.code) : "";
+    renderPhoneCountryList();
+  } catch (_) {
+    phoneCountriesCache = [];
+    renderPhoneCountryList();
+  }
+}
+
+async function loadPageCountries(savedCountry = "") {
+  const select = $("#phone-page-country");
+  try {
+    const d = await api("/api/settings/page-countries");
+    const saved = (savedCountry || "").toUpperCase();
+    const countries = d.countries || [];
+    select.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "请选择国家编码";
+    select.appendChild(empty);
+    countries.forEach((c) => {
+      const o = document.createElement("option");
+      o.value = c.code;
+      o.textContent = `${c.name}（${c.code} +${c.dial_code}）`;
+      select.appendChild(o);
+    });
+    if (saved && !countries.some((c) => c.code === saved)) {
+      const o = document.createElement("option");
+      o.value = saved;
+      o.textContent = `${saved}（存量）`;
+      select.appendChild(o);
+    }
+    select.value = saved;
+  } catch (_) {
+    select.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "国家编码加载失败";
+    select.appendChild(empty);
+  }
+}
+
+async function testPhoneProvider() {
+  const platform = $("#phone-platform").value;
+  const key = $("#phone-api-key").value.trim();
+  const balNote = $("#phone-balance-note");
+  const errNote = $("#phone-test-error");
+  const qs = "?platform=" + encodeURIComponent(platform)
+    + (key ? "&api_key=" + encodeURIComponent(key) : "");
+  balNote.hidden = true;
+  errNote.hidden = true;
+  try {
+    const bal = await api("/api/settings/phone-balance" + qs);
+    if (bal.balance) {
+      balNote.textContent = (platform === "hero_sms" ? "HeroSMS" : platform)
+        + " 余额: " + bal.balance;
+      balNote.hidden = false;
+    }
+    if (bal.detail) {
+      errNote.textContent = bal.detail;
+      errNote.hidden = false;
+    }
+  } catch (e) {
+    errNote.textContent = e.message;
+    errNote.hidden = false;
+  }
+  try {
+    await loadPhoneCountries();
+  } catch (e) {
+    errNote.textContent = e.message;
+    errNote.hidden = false;
+  }
+}
+
+function renderPhoneCountryList(filter = "") {
+  const list = $("#phone-country-list");
+  const val = $("#phone-country-value").value;
+  const q = filter.trim().toLowerCase();
+  list.innerHTML = "";
+  const items = phoneCountriesCache.filter((c) =>
+    !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q));
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "phone-country-item";
+    empty.textContent = q ? "无匹配结果" : "暂无国家数据";
+    list.appendChild(empty);
+    list.hidden = false;
+    return;
+  }
+  items.forEach((c) => {
+    const div = document.createElement("div");
+    div.className = "phone-country-item" + (c.code === val ? " is-selected" : "");
+    div.textContent = c.name ? `${c.name}（${c.code}）` : c.code;
+    div.dataset.code = c.code;
+    div.addEventListener("click", () => {
+      $("#phone-country-value").value = c.code;
+      $("#phone-country-search").value = c.name
+        ? `${c.name}（${c.code}）` : c.code;
+      list.hidden = true;
+      renderPhoneCountryList();
+    });
+    list.appendChild(div);
+  });
+  list.hidden = false;
+}
+
+$("#phone-country-search").addEventListener("input", (e) => {
+  renderPhoneCountryList(e.target.value);
+});
+$("#phone-country-search").addEventListener("focus", () => {
+  renderPhoneCountryList($("#phone-country-search").value);
+});
+
+$("#phone-api-key").addEventListener("blur", () => { testPhoneProvider(); });
+
+$("#btn-save-phone-verification").addEventListener("click", async () => {
+  const b = $("#phone-verification-mode-seg .segmented-item.is-active");
+  const mode = b?.dataset.mode || "manual";
+  const body = {
+    phone_verification_mode: mode,
+    phone_verification_platform: $("#phone-platform").value,
+    phone_verification_country: $("#phone-country-value").value.trim(),
+    phone_verification_page_country: $("#phone-page-country").value.trim(),
+  };
+  const apiKey = $("#phone-api-key").value.trim();
+  if (apiKey) body.phone_verification_api_key = apiKey;
+  try {
+    await api("/api/settings", { method: "PUT", body });
+    $("#phone-api-key").value = "";
+    toast("手机号验证设置已保存");
     await loadSettings();
   } catch (e) { toast(e.message, true); }
 });

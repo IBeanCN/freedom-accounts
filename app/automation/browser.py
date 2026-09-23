@@ -625,10 +625,46 @@ async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
 # Keyed by session key (e.g. "g<group_id>_manual"); one live browser per key.
 _MANUAL_SESSIONS: dict[str, dict] = {}
 _MANUAL_SEM = asyncio.Semaphore(2)   # bounded concurrent launches
+_TASK_CONTEXTS: dict[str, dict] = {}
 
 
 def managed_session_keys() -> list[str]:
     return list(_MANUAL_SESSIONS.keys())
+
+
+def get_first_managed_page():
+    """Return the first Page from any active managed session, or None."""
+    for sess in _MANUAL_SESSIONS.values():
+        if sess.get("closer") and not sess["closer"].done():
+            ctx = sess.get("ctx")
+            if ctx and getattr(ctx, "pages", None):
+                return ctx.pages[0]
+    return None
+
+
+def register_task_context(key: str, closer, ctx):
+    """Expose a task-owned context for diagnostics without making it manual."""
+    async def _wrapped_close():
+        sess = _TASK_CONTEXTS.get(key)
+        if sess and sess.get("closed"):
+            return
+        if sess:
+            sess["closed"] = True
+        _TASK_CONTEXTS.pop(key, None)
+        await closer()
+
+    _TASK_CONTEXTS[key] = {"closer": _wrapped_close, "ctx": ctx, "closed": False}
+    return _wrapped_close
+
+
+def get_first_task_page():
+    """Return the first Page from a live account-task context, or None."""
+    for sess in list(_TASK_CONTEXTS.values()):
+        if not sess.get("closed"):
+            ctx = sess.get("ctx")
+            if ctx and getattr(ctx, "pages", None):
+                return ctx.pages[0]
+    return None
 
 
 def is_managed_session_open(key: str) -> bool:

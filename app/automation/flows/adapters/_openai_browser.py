@@ -13,11 +13,20 @@ import asyncio
 import random
 import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+from collections.abc import Awaitable, Callable
 
+from ...phone import PhoneProviderNoNumbers
 from ._util import now, totp_code
 
 CALLBACK_WAIT_SECONDS = 120      # 等 localhost 回调总时长
 CALLBACK_HOSTS = ("localhost", "127.0.0.1")
+ADD_PHONE_URL = "https://auth.openai.com/add-phone"
+PHONE_WAIT_POLL_SECONDS = 1.0
+
+# Future SMS/phone-pool integrations can fill phone and code themselves. The
+# handler receives (page, email, steps) and returns only after the phone gate
+# has been completed.
+PhoneVerificationHandler = Callable[[object, str, list], Awaitable[None]]
 
 # 页面选择器（与插件 PAGE_STEP_FUNCS 保持一致）
 SEL_EMAIL = 'input[type="email"], input[name="email"], input#email'
@@ -31,6 +40,66 @@ def is_localhost(url: str) -> bool:
         return urlparse(url).hostname in CALLBACK_HOSTS
     except Exception:
         return False
+
+
+def is_add_phone_url(url: str) -> bool:
+    """Match OpenAI's phone-enrollment page exactly, ignoring query/hash."""
+    try:
+        actual = urlparse(str(url))
+        expected = urlparse(ADD_PHONE_URL)
+        return (actual.scheme == expected.scheme
+                and actual.hostname == expected.hostname
+                and actual.path.rstrip("/") == expected.path)
+    except Exception:
+        return False
+
+
+async def manual_phone_verification(page, email: str, steps: list) -> None:
+    """Leave the OpenAI page untouched until the user completes phone entry."""
+    _step(steps, "phone_verification_wait",
+          "SDK 环境检测到手机号验证，保持页面等待用户输入手机号和验证码")
+    while is_add_phone_url(page.url):
+        await asyncio.sleep(PHONE_WAIT_POLL_SECONDS)
+    _step(steps, "phone_verification_completed", "手机号验证页面已离开，继续授权流程")
+
+
+async def _handle_add_phone(page, email: str, steps: list, *, cdp_engine: bool,
+                            handler: PhoneVerificationHandler | None = None) -> None:
+    """Cross one OpenAI phone-enrollment gate without touching the page.
+
+    SDK keeps the browser open indefinitely for manual phone/code entry. A
+    handler replaces only that waiting block when automatic phone/SMS support
+    is added later.
+    """
+    if not is_add_phone_url(page.url):
+        return
+    if cdp_engine:
+        _step(steps, "phone_verification_unsupported",
+              f"CDP 环境检测到 {ADD_PHONE_URL}，终止流程", ok=False)
+        raise RuntimeError("CDP 引擎不支持 OpenAI 手机号验证，已终止上号流程")
+
+    if handler is not None:
+        _step(steps, "phone_verification_provider", "调用手机号/验证码处理器")
+        try:
+            await handler(page, email, steps)
+        except PhoneProviderNoNumbers as e:
+            _step(steps, "phone_verification_no_numbers",
+                  f"接码平台连续取号失败，任务停止: {e}", ok=False)
+            raise
+        except Exception as e:
+            # A provider outage must not strand a local headed browser at the
+            # gate: the user can finish the same page manually.
+            _step(steps, "phone_verification_fallback",
+                  f"自动手机号验证失败，回退手动: {e}", ok=False)
+            if is_add_phone_url(page.url):
+                await manual_phone_verification(page, email, steps)
+            else:
+                raise
+        if is_add_phone_url(page.url):
+            await asyncio.sleep(PHONE_WAIT_POLL_SECONDS)
+        return
+
+    await manual_phone_verification(page, email, steps)
 
 
 def parse_callback(callback_url: str) -> tuple[str, str]:
@@ -77,11 +146,16 @@ async def _fill_first(page, selector: str, value: str, attempts: int = 5) -> boo
     return False
 
 
-async def _click_continue(page, attempts: int = 5) -> bool:
+async def _click_continue(page, attempts: int = 5, *,
+                          allow_add_phone: bool = True) -> bool:
     for _ in range(attempts):
+        if not allow_add_phone and is_add_phone_url(page.url):
+            return False
         try:
             btn = page.locator(SEL_CONTINUE)
             if await btn.count() > 0:
+                if not allow_add_phone and is_add_phone_url(page.url):
+                    return False
                 await btn.first.click()
                 return True
         except Exception:
@@ -91,13 +165,24 @@ async def _click_continue(page, attempts: int = 5) -> bool:
 
 
 async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
-                           totp_secret: str, steps: list) -> dict:
+                           totp_secret: str, steps: list, *,
+                           cdp_engine: bool = False,
+                           phone_handler: PhoneVerificationHandler | None = None) -> dict:
     """执行通用 OpenAI 浏览器授权段。
 
     返回 {"callback_url", "code", "state"}；失败抛 RuntimeError（steps 已留痕）。
     """
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     page.set_default_timeout(30000)
+    captured: dict = {}
+
+    def _on_request(req):
+        if not captured and is_localhost(req.url):
+            captured["url"] = req.url
+
+    # Manual phone entry can navigate straight to the localhost callback. The
+    # listener must already be active before that wait starts.
+    page.on("request", _on_request)
 
     # 1) 清 openai/chatgpt cookie（防旧会话把授权页重定向走）
     try:
@@ -114,6 +199,8 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     _step(steps, "goto", page.url)
 
     # 3) 填邮箱 -> Continue
+    await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                           handler=phone_handler)
     await _sleep(5, 10)
     if await _fill_first(page, SEL_EMAIL, email):
         await _sleep(3, 8)
@@ -122,6 +209,8 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     else:
         _step(steps, "fill_email", "未找到邮箱输入框（可能已登录/已是授权页），继续", ok=False)
 
+    await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                           handler=phone_handler)
     # 4) 填密码 -> Continue
     if not (password or "").strip():
         raise RuntimeError("账号未配置密码，无法自动完成授权")
@@ -133,6 +222,8 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     else:
         _step(steps, "fill_password", "未找到密码输入框（可能已登录/无需密码），继续", ok=False)
 
+    await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                           handler=phone_handler)
     # 5) 2FA（可选）
     await _sleep(5, 10)
     totp_input = page.locator(SEL_TOTP)
@@ -163,27 +254,35 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     # 本机通常没有服务监听，导航会失败并被 Chrome 替换成网络错误页
     # chrome-error://chromewebdata/，page.url 从此不再是 localhost，
     # 轮询会白等 CALLBACK_WAIT_SECONDS 超时（真实事故：task#8，fill_2fa 后卡满 5 分钟）。
-    captured: dict = {}
-
-    def _on_request(req):
-        if not captured and is_localhost(req.url):
-            captured["url"] = req.url
-
-    page.on("request", _on_request)
+    deadline = time.monotonic() + CALLBACK_WAIT_SECONDS
+    continue_rounds = 0
     try:
-        for _round in range(5):
-            await _sleep(5, 10)
+        while True:
             if captured.get("url") or is_localhost(page.url):
                 break
-            await _click_continue(page, attempts=3)
-            if captured.get("url") or is_localhost(page.url):
+
+            # The phone gate is manual and unbounded by design. Returning from
+            # it restarts the bounded callback wait for the next auth page.
+            if is_add_phone_url(page.url):
+                await _handle_add_phone(page, email, steps,
+                                        cdp_engine=cdp_engine, handler=phone_handler)
+                deadline = time.monotonic() + CALLBACK_WAIT_SECONDS
+                continue_rounds = 0
+                continue
+
+            if time.monotonic() >= deadline:
                 break
-        deadline = time.monotonic() + CALLBACK_WAIT_SECONDS
-        while time.monotonic() < deadline:
-            if captured.get("url") or is_localhost(page.url):
-                break
-            await asyncio.sleep(1)
-        else:
+            if continue_rounds < 5:
+                await _sleep(5, 10)
+                if captured.get("url") or is_localhost(page.url):
+                    break
+                if is_add_phone_url(page.url):
+                    continue
+                await _click_continue(page, attempts=3, allow_add_phone=False)
+                continue_rounds += 1
+            else:
+                await asyncio.sleep(1)
+        if not (captured.get("url") or is_localhost(page.url)):
             _step(steps, "callback_timeout", page.url[:200])
             raise RuntimeError(
                 f"等待 localhost 回调超时（{CALLBACK_WAIT_SECONDS}s），最后页面: {page.url[:200]}")

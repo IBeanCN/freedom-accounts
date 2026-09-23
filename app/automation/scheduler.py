@@ -21,6 +21,8 @@ from ..core import crypto
 from . import browser as browser_mod
 from . import flows
 from .flows.adapters._openai_browser import redact_callback_url
+from .flows.adapters._phone_verification import provider_phone_verification
+from .phone import get_phone_adapter
 
 _groups: dict[int, dict] = {}   # group_id -> {"queue": Queue, "dispatcher": Task, "sem": Semaphore}
 _lock = asyncio.Lock()
@@ -78,6 +80,7 @@ async def enqueue(group_id: int, account_ids: list[int]) -> int:
                 WHERE id IN ({marks})""", tuple(queued))
         await db.commit()
         return len(queued)
+    return 0
 
 
 async def _mark_cancelled(db, account_ids: list[int]) -> None:
@@ -235,6 +238,47 @@ async def _close_protected(closer) -> None:
         raise RunStopped from None
 
 
+async def _resolve_phone_handler(steps: list, g, a):
+    """Build the optional phone provider; any missing config falls back to manual.
+
+    Platform priority: account.phone_platform > group.phone_platform > system setting.
+    API key and country stay in system settings (shared across platforms).
+    """
+    mode = (await settings.get("phone_verification_mode") or "manual").strip()
+    if mode != "auto":
+        return None
+    ac_val = a["phone_platform"] if "phone_platform" in a.keys() else ""
+    g_val = g["phone_platform"] if "phone_platform" in g.keys() else ""
+    platform = (ac_val if ac_val and ac_val != "inherit" else "") \
+        or (g_val if g_val and g_val != "inherit" else "") \
+        or (await settings.get("phone_verification_platform") or "").strip()
+    country = (await settings.get("phone_verification_country") or "").strip()
+    page_country = (await settings.get("phone_verification_page_country") or "").strip()
+    encrypted_key = await settings.get("phone_verification_api_key") or ""
+    api_key = crypto.decrypt(encrypted_key).strip() if encrypted_key else ""
+    try:
+        adapter = get_phone_adapter(platform)()
+    except ValueError:
+        adapter = None
+    if adapter is None or not country or not api_key or not page_country:
+        steps.append({
+            "t": _now(), "step": "phone_verification_fallback",
+            "detail": "自动接码配置不完整或平台不支持，回退手动手机号验证", "ok": False,
+        })
+        return None
+
+    async def handler(page, email: str, handler_steps: list) -> None:
+        await provider_phone_verification(
+            page, email, handler_steps, adapter=adapter,
+            api_key=api_key, country=country, page_country=page_country)
+
+    steps.append({
+        "t": _now(), "step": "phone_verification_auto",
+        "detail": f"自动接码已启用：{adapter.label}", "ok": True,
+    })
+    return handler
+
+
 async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                    group_decrypted: dict | None = None) -> None:
     group_id, account_id = g["id"], a["id"]
@@ -277,6 +321,8 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
                     fp, mode, profile_key=f"g{group_id}_a{account_id}",
                     proxy_server=proxy_server)
+                closer = browser_mod.register_task_context(
+                    f"g{group_id}_a{account_id}", closer, ctx)
             finally:
                 _EXECUTE_LAUNCHING.discard(account_id)
         except browser_mod.SessionLimitError as e:
@@ -290,6 +336,8 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
                     fp, mode, profile_key=f"g{group_id}_a{account_id}",
                     proxy_server=proxy_server)
+                closer = browser_mod.register_task_context(
+                    f"g{group_id}_a{account_id}", closer, ctx)
             finally:
                 _EXECUTE_LAUNCHING.discard(account_id)
         steps.append({"t": _now(), "step": "browser_launched", "detail": engine_used, "ok": True})
@@ -304,7 +352,9 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
         try:
             result = await flows.run_flow(g["login_type"], ctx, a["username"], password,
                                           totp_secret, g["login_url"], steps,
-                                          group=group_decrypted or dict(g), account=dict(a))
+                                          group=group_decrypted or dict(g), account=dict(a),
+                                          cdp_engine=await browser_mod.cdp_configured(),
+                                          phone_handler=await _resolve_phone_handler(steps, g, a))
         finally:
             try:
                 await _close_protected(closer)

@@ -59,12 +59,15 @@ def requires_openai_credentials(login_type: str) -> bool:
 
 async def run_flow(login_type: str, ctx, username: str, password: str,
                    totp_secret: str, login_url: str, steps: list,
-                   group: dict | None = None, account: dict | None = None) -> dict:
+                   group: dict | None = None, account: dict | None = None,
+                   cdp_engine: bool = False, phone_handler=None) -> dict:
     """Async entry used by the scheduler (all engines are native async now).
 
     ``group`` / ``account`` carry the DB rows (extra kwargs, keyword-only in
     spirit): adapters needing upstream context (e.g. sub2api OAuth via
     upstream_key / remote_id) read them; legacy adapters ignore them.
+    ``cdp_engine`` / ``phone_handler`` carry engine policy and the optional
+    automatic phone-enrollment provider into OpenAI flows.
     """
     fn = pick_flow(login_type, sync=False)
     supports_context = _RUN_CONTEXT_SUPPORTED.get(fn)
@@ -74,12 +77,13 @@ async def run_flow(login_type: str, ctx, username: str, password: str,
         except (TypeError, ValueError):
             params = {}
         supports_context = any(
-            name in ("group", "account")
+            name in ("group", "account", "cdp_engine", "phone_handler")
             or param.kind == inspect.Parameter.VAR_KEYWORD
             for name, param in params.items()
         )
         _RUN_CONTEXT_SUPPORTED[fn] = supports_context
     if supports_context:
         return await fn(ctx, username, password, totp_secret, login_url, steps,
-                        group=group, account=account)
+                        group=group, account=account, cdp_engine=cdp_engine,
+                        phone_handler=phone_handler)
     return await fn(ctx, username, password, totp_secret, login_url, steps)

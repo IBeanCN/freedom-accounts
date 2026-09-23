@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS groups (
     interval_max_ms INTEGER NOT NULL DEFAULT 10000,
     browser_mode TEXT NOT NULL DEFAULT 'inherit', -- headless|headed|inherit
     proxy_id INTEGER,                      -- proxies.id for the whole group; account.proxy_id overrides it
+    phone_platform TEXT NOT NULL DEFAULT '', -- '' = use system settings; specific key overrides
     fingerprint_template TEXT NOT NULL DEFAULT '{}', -- group-level fp template; accounts inherit it, seed randomized per account
     fp_check_url TEXT NOT NULL DEFAULT '', -- per-group override for the fingerprint-check site URL
     fp_check_result TEXT NOT NULL DEFAULT '', -- group-template check: '' | 检测中 | 高风险/80 | 失败: ...
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     password TEXT NOT NULL,
     totp_secret TEXT NOT NULL DEFAULT '',  -- optional 2FA secret (base32)
     browser_mode TEXT NOT NULL DEFAULT 'inherit', -- headless|headed|inherit
+    phone_platform TEXT NOT NULL DEFAULT 'inherit', -- inherit|specific key; account overrides group
     fingerprint TEXT NOT NULL DEFAULT '{}',-- JSON: fingerprint config
     enabled INTEGER NOT NULL DEFAULT 1,    -- 1=enabled; 0=disabled (only edit/delete allowed)
     proxy_id INTEGER,                      -- proxies.id; NULL = direct connection
@@ -137,6 +139,9 @@ async def init_db() -> None:
     if "fingerprint_template" not in cols:
         await db.execute(
             "ALTER TABLE groups ADD COLUMN fingerprint_template TEXT NOT NULL DEFAULT '{}'")
+    if "phone_platform" not in cols:
+        await db.execute(
+            "ALTER TABLE groups ADD COLUMN phone_platform TEXT NOT NULL DEFAULT ''")
     # accounts.enabled may be missing on databases created before it existed
     async with db.execute("PRAGMA table_info(accounts)") as cur:
         acols = {r[1] for r in await cur.fetchall()}
@@ -144,6 +149,9 @@ async def init_db() -> None:
         await db.execute("ALTER TABLE accounts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
     if "proxy_id" not in acols:
         await db.execute("ALTER TABLE accounts ADD COLUMN proxy_id INTEGER")
+    if "phone_platform" not in acols:
+        await db.execute(
+            "ALTER TABLE accounts ADD COLUMN phone_platform TEXT NOT NULL DEFAULT 'inherit'")
     await _migrate_proxies(db)
     async with db.execute("PRAGMA table_info(proxies)") as cur:
         pcols = {r[1] for r in await cur.fetchall()}

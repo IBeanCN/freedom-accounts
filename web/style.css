@@ -957,6 +957,7 @@ tr.is-disabled .switch { opacity: 1; }
    11. 表单 Form
    ========================================================================== */
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field[hidden] { display: none; }
 .field-label {
   font-size: var(--fa-fs-label);
   color: var(--fa-text-2);
@@ -972,6 +973,26 @@ tr.is-disabled .switch { opacity: 1; }
 }
 /* 数值型字段（保留天数等）：不该占满整行，避免与说明文字比例失衡 */
 .field-narrow { max-width: 180px; }
+.phone-country-list {
+  max-height: 200px; overflow-y: auto;
+  border: 1px solid var(--fa-hairline);
+  border-radius: var(--fa-radius-md);
+  background: var(--fa-canvas);
+}
+.phone-country-item {
+  padding: 7px 13px;
+  font-size: var(--fa-fs-table);
+  color: var(--fa-ink);
+  cursor: pointer;
+  transition: background var(--fa-dur) var(--fa-ease);
+}
+.phone-country-item:hover {
+  background: var(--fa-accent-soft);
+}
+.phone-country-item.is-selected {
+  background: var(--fa-accent-soft);
+  font-weight: 600;
+}
 
 .input,
 .select,

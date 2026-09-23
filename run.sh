@@ -15,5 +15,5 @@ if [ ! -f .venv/.deps_installed ] || [ requirements.txt -nt .venv/.deps_installe
   touch .venv/.deps_installed
 fi
 
-echo "[*] starting freedom-accounts at http://127.0.0.1:8000 (admin / admin123)"
-exec python -m uvicorn app.main:app --host "${FA_HOST:-127.0.0.1}" --port "${FA_PORT:-8000}"
+echo "[*] starting freedom-accounts at http://127.0.0.1:10008 (admin / admin123)"
+exec python -m uvicorn app.main:app --host "${FA_HOST:-127.0.0.1}" --port "${FA_PORT:-10008}" --log-level debug

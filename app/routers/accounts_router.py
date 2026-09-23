@@ -44,6 +44,7 @@ class AccountBody(BaseModel):
     password: str = Field(min_length=1)
     totp_secret: str = ""
     browser_mode: str = Field(default="inherit", pattern="^(headless|headed|inherit)$")
+    phone_platform: str = Field(default="inherit")
     fingerprint: dict | str = {}
     enabled: bool = True
     remark: str = ""
@@ -130,10 +131,11 @@ async def create_account(body: AccountBody):
     encrypted_totp = crypto.encrypt(body.totp_secret.strip()) if body.totp_secret.strip() else ""
     cur = await db.execute(
         """INSERT INTO accounts(group_id,username,password,totp_secret,browser_mode,
-           fingerprint,enabled,remark,proxy_id)
-           VALUES(?,?,?,?,?,?,?,?,?)""",
+           phone_platform,fingerprint,enabled,remark,proxy_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (body.group_id, username, encrypted_password, encrypted_totp,
-         body.browser_mode, json.dumps(fp, ensure_ascii=False),
+         body.browser_mode, body.phone_platform.strip() or "inherit",
+         json.dumps(fp, ensure_ascii=False),
          int(body.enabled), body.remark, proxy_id))
     await db.commit()
     return {"id": cur.lastrowid, "fingerprint": fp, "created": True, "exists": False}
@@ -169,8 +171,9 @@ async def update_account(account_id: int, body: AccountBody):
             raise HTTPException(404, "proxy not found")
     await db.execute(
         """UPDATE accounts SET group_id=?,username=?,password=?,totp_secret=?,browser_mode=?,
-           fingerprint=?,enabled=?,remark=?,proxy_id=? WHERE id=?""",
+           phone_platform=?,fingerprint=?,enabled=?,remark=?,proxy_id=? WHERE id=?""",
         (body.group_id, body.username, password, totp, body.browser_mode,
+         body.phone_platform.strip() or "inherit",
          json.dumps(fp, ensure_ascii=False), int(body.enabled), body.remark,
          proxy_id, account_id))
     await db.commit()

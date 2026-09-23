@@ -37,6 +37,8 @@ class GroupBody(BaseModel):
     browser_mode: str = Field(default="inherit", pattern="^(headless|headed|inherit)$")
     # group-level proxy; the account-level proxy wins when both are set
     proxy_id: Optional[int] = None
+    # group-level phone platform; empty => use system settings
+    phone_platform: str = ""
     # group-level fingerprint template: accounts inherit these values, seed is
     # always randomized per account (company-batch machine scenario)
     fingerprint_template: dict | str = {}
@@ -122,24 +124,30 @@ async def _apply_remote_sync(db, group_row, remote_data: dict) -> dict:
         rid = str(it.get("id") or "").strip()
         if rid:
             remote_items.setdefault(rid, it)
-    remote_names: set[str] = {
-        str(it.get("email") or it.get("name") or "").strip().lower()
-        for it in remote_items.values()}
-    remote_names.discard("")
     remote_identity_ids: dict[str, set[str]] = {}
     for rid, item in remote_items.items():
         identity = str(item.get("email") or item.get("name") or "").strip().lower()
         if identity:
             remote_identity_ids.setdefault(identity, set()).add(rid)
 
+    def _item_identity(item: dict) -> str:
+        return str(item.get("email") or item.get("name") or "").strip().lower()
+
+    remote_names = set(remote_identity_ids)
+
     rows = await db.execute("SELECT * FROM accounts WHERE group_id=?", (group_id,))
     local_rows = await rows.fetchall()
     local_by_rid: dict[str, dict] = {}
+    local_manual_by_identity: dict[str, list[dict]] = {}
     for r in local_rows:
         d = dict(r)
         rid = (d.get("remote_id") or "").strip()
         if rid:
             local_by_rid[rid] = d
+        else:
+            identity = (d.get("username") or "").strip().lower()
+            if identity:
+                local_manual_by_identity.setdefault(identity, []).append(d)
 
     created = deleted = updated = disabled = 0
     template = group_row.get("fingerprint_template") or "{}"
@@ -161,11 +169,21 @@ async def _apply_remote_sync(db, group_row, remote_data: dict) -> dict:
         token_expires_at = str(it.get("access_token_expires_at")
                                or it.get("token_expires_at") or "").strip()
         row = local_by_rid.get(rid)
+        identity = _item_identity(it)
+        if row is None and identity:
+            # Manual accounts get their remote_id only after the first upstream
+            # authorization. Adopt exactly one matching row so the user's local
+            # password/fingerprint survive; ambiguous matches keep duplicate
+            # protection below.
+            manual_rows = local_manual_by_identity.get(identity, [])
+            if len(manual_rows) == 1 and remote_identity_ids.get(identity) == {rid}:
+                row = manual_rows[0]
         if row is not None:
             await db.execute(
-                """UPDATE accounts SET username=?, remote_status=?,
+                """UPDATE accounts SET username=?, remote_id=?, remote_status=?,
                    remote_remark=?, token_expires_at=? WHERE id=?""",
-                (display or row["username"], status or row["remote_status"],
+                (display or row["username"], rid,
+                 status or row["remote_status"],
                  up_remark, token_expires_at or row["token_expires_at"], row["id"]))
             updated += 1
         else:
@@ -279,12 +297,13 @@ async def create_group(body: GroupBody):
     cur = await db.execute(
         """INSERT INTO groups(group_type,name,login_type,login_url,upstream_key,callback_url,
            header_json,concurrency,interval_min_ms,interval_max_ms,browser_mode,
-           proxy_id,fingerprint_template,fp_check_url)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           proxy_id,phone_platform,fingerprint_template,fp_check_url)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
-         body.proxy_id, json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip()))
+         body.proxy_id, body.phone_platform.strip(),
+         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip()))
     await db.commit()
     return {"id": cur.lastrowid}
 
@@ -306,13 +325,13 @@ async def update_group(group_id: int, body: GroupBody):
     await db.execute(
         """UPDATE groups SET group_type=?,name=?,login_type=?,login_url=?,upstream_key=?,
            callback_url=?,header_json=?,concurrency=?,interval_min_ms=?,interval_max_ms=?,
-           browser_mode=?,proxy_id=?,fingerprint_template=?,fp_check_url=?
+           browser_mode=?,proxy_id=?,phone_platform=?,fingerprint_template=?,fp_check_url=?
            WHERE id=?""",
         (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
-         body.proxy_id, json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(),
-         group_id))
+         body.proxy_id, body.phone_platform.strip(),
+         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(), group_id))
     await db.commit()
     return {"ok": True}
 
@@ -398,8 +417,8 @@ async def start_group(group_id: int, body: StartBody):
     except Exception as e:
         raise HTTPException(502, f"同步上游账号失败: {e}")
 
-    # Manual rows have no remote_id and therefore no upstream status; they are
-    # still valid CPR OAuth candidates. Sync keeps such local-only rows intact.
+    # Unique manual rows adopted during sync now carry the upstream ID; any
+    # remaining local-only rows are still valid OAuth candidates.
     selected_ids = list(dict.fromkeys(body.account_ids or []))
     params: list = [group_id]
     where = ("WHERE group_id=? AND enabled=1 "
@@ -448,8 +467,10 @@ class SyncBody(BaseModel):
       - remote_id already present locally -> update UPSTREAM-owned fields only
         (display name, remark, remote_id). Local-only fields (password, TOTP,
         fingerprint, proxy, enabled...) are never touched.
+      - a unique local manual row is adopted by a unique upstream email/name
+        identity; its remote_id and upstream-owned fields are backfilled while
+        local-only fields stay intact.
       - local row with remote_id missing upstream -> deleted (it came from sync).
-      - local manual rows (no remote_id) are always kept untouched.
       - same account (email/username) present under DIFFERENT remote ids ->
         every matching local row is disabled (duplicate account protection).
     """
