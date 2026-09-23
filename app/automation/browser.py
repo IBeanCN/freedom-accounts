@@ -76,15 +76,29 @@ def cloak_version() -> str:
 
 
 async def cdp_version(cdp_url: str) -> str:
-    """Probe a running cloakserve's Chrome version via /json/version; '' on failure."""
+    """Probe Chrome version without launching a licensed CDP seat.
+
+    ``/json/version`` starts a seed-backed browser. Check root status first and
+    reuse only an already-active seed; return empty when none is running.
+    """
     if not cdp_url:
         return ""
     try:
         async with httpx.AsyncClient(timeout=3) as client:
-            r = await client.get(f"{cdp_url.rstrip('/')}/json/version")
-            data = r.json()
-        browser = str(data.get("Browser") or "")
-        return browser.split("/", 1)[1] if "/" in browser else browser
+            root = (await client.get(cdp_url.rstrip("/"))).json()
+            processes = root.get("processes") if isinstance(root.get("processes"), list) else []
+            if processes:
+                seed = str(processes[0].get("seed") or "").strip()
+                if seed:
+                    r = await client.get(
+                        f"{cdp_url.rstrip('/')}/json/version",
+                        params={"fingerprint": seed})
+                    data = r.json()
+                    browser = str(data.get("Browser") or "")
+                    return browser.split("/", 1)[1] if "/" in browser else browser
+            # No active browser: do not launch a licensed seat just to show a
+            # version. The root probe above already proves cloakserve reachability.
+            return ""
     except Exception:
         return ""
 
@@ -155,13 +169,15 @@ async def _launch_cloakserve(cdp_url: str, fp: dict, ctx_kwargs: dict,
     context = browser.contexts[0] if browser.contexts else await browser.new_context(**ctx_kwargs)
 
     async def close_remote():
+        # The HTTP close owns the remote fingerprint process. Notify it first so
+        # a slow CDP disconnect cannot delay actual browser teardown.
         with contextlib.suppress(Exception):
-            await browser.close()
-        with contextlib.suppress(Exception):
-            await pw.stop()
-        with contextlib.suppress(Exception):
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=3) as client:
                 await client.post(f"{base}/fingerprint/{seed}/close")
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(browser.close(), 3)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(pw.stop(), 1)
 
     return close_remote, context, f"cloakserve(seed={seed})"
 
@@ -254,20 +270,79 @@ class SessionLimitError(RuntimeError):
 # endpoint but no revoke, so the strongest force-release we can do locally is:
 # gracefully close every CloakBrowser session we own, then poll the server
 # until seats free up (bounded wait covering the zombie TTL).
-async def close_protected(closer) -> None:
-    """Close a browser even when the calling task is being cancelled."""
+CLOSE_GRACE_SECONDS = 5.0
+
+
+def _kill_profile_processes(profile_key: str) -> int:
+    """Force-kill only the Chromium processes using one managed profile."""
+    import os as _os
+    import signal
+    import subprocess
+
+    profile_path = str(config.BROWSER_PROFILES_DIR / profile_key)
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", "browser_profiles"], capture_output=True, text=True,
+            timeout=2)
+        pids = [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+    except Exception:
+        return 0
+    killed = 0
+    for pid in pids:
+        try:
+            probe = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                text=True, timeout=2)
+            if profile_path not in (probe.stdout or ""):
+                continue
+            _os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except Exception:
+            continue
+    if killed:
+        _ACTIVE_LOCAL_PROFILES.discard(profile_key)
+    return killed
+
+
+async def terminate_profile(profile_key: str | None) -> None:
+    """Best-effort hard stop for a local profile after graceful close fails."""
+    if profile_key:
+        await asyncio.to_thread(_kill_profile_processes, profile_key)
+
+
+async def close_protected(closer, timeout: float = CLOSE_GRACE_SECONDS,
+                          profile_key: str | None = None) -> None:
+    """Close a browser even when the calling task is being cancelled.
+
+    A graceful close normally finishes quickly. The grace deadline only covers
+    a stuck SDK/Playwright close; after it expires, the exact managed profile is
+    killed instead of keeping a stop request open indefinitely.
+    """
     close_task = asyncio.create_task(closer())
     current = asyncio.current_task()
+    caller_cancelled = False
     try:
-        await asyncio.shield(close_task)
+        await asyncio.wait_for(asyncio.shield(close_task), timeout)
+    except TimeoutError:
+        await terminate_profile(profile_key)
+        close_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await close_task
     except asyncio.CancelledError:
+        caller_cancelled = True
         if current is not None:
             current.uncancel()
         try:
-            await close_task
+            await asyncio.wait_for(asyncio.shield(close_task), timeout)
+        except TimeoutError:
+            await terminate_profile(profile_key)
+            close_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await close_task
         except asyncio.CancelledError:
             pass
-        raise
+    if caller_cancelled:
+        raise asyncio.CancelledError
 
 
 _SEAT_POLL_INTERVAL = 5.0     # s between server seat checks
