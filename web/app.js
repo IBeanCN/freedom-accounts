@@ -1440,8 +1440,8 @@ function fillProxySelect(selected, selId = "#a-proxy_id", directLabel = "不使�
 function setAccountProxySummary(a) {
   const summary = $("#a-proxy-summary");
   const proxy = state.proxies.find((p) => String(p.id) === String(a?.proxy_id || ""));
-  summary.textContent = proxy ? `当前账号代理 ${proxy.name}` : "跟随分组代理";
-  summary.className = `chip ${proxy ? "chip-plain" : "chip-muted"}`;
+  summary.textContent = proxy ? `账号代理：${proxy.name}` : "跟随分组代理";
+  summary.className = "field-hint";
 }
 
 $("#btn-regen-fp").addEventListener("click", () => {
@@ -2136,6 +2136,14 @@ async function loadEngine() {
     const s = await api("/api/settings");
     applyEngine(s.engine);
     applyOpenBrowserVisibility(s.cloak_cdp_url);
+    // 回填时区入口不依赖用户是否打开过系统设置页，启动时同步缓存全局默认位置。
+    state.defaultGeo = {
+      country: s.default_geo_country || "",
+      region: s.default_geo_region || "",
+      city: s.default_geo_city || "",
+      timezone: s.default_geo_timezone || "",
+      locale: s.default_geo_locale || "",
+    };
   } catch (_) { /* 引擎信息非关键路径 */ }
 }
 
@@ -2261,7 +2269,9 @@ function fillGeoForm(geo, { quiet = false } = {}) {
 
 $("#btn-save-geo").addEventListener("click", async () => {
   try {
-    await api("/api/settings", { method: "PUT", body: geoFormBody() });
+    const body = geoFormBody();
+    await api("/api/settings", { method: "PUT", body });
+    state.defaultGeo = { ...state.defaultGeo, ...body };
     toast("默认时区位置已保存");
   } catch (e) { toast(e.message, true); }
 });
