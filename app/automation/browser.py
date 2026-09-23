@@ -349,6 +349,11 @@ _SEAT_POLL_INTERVAL = 5.0     # s between server seat checks
 _SEAT_WAIT_TIMEOUT = 180.0    # s max wait for zombie seats to expire
 
 
+async def cdp_configured() -> bool:
+    """Whether launches must use the explicitly configured remote CDP engine."""
+    return bool((await settings.get("cloak_cdp_url") or "").strip())
+
+
 def _license_key() -> str | None:
     return config.CLOAKBROWSER_LICENSE_KEY or None
 
@@ -386,6 +391,11 @@ async def force_free_seats(timeout: float = _SEAT_WAIT_TIMEOUT) -> bool:
 
     Returns True when a seat is (very likely) free.
     """
+    if await cdp_configured():
+        # This check uses the app's local SDK key, while the CDP server owns
+        # the actual license/seat state. Never make CDP wait on that proxy.
+        return True
+
     await close_all_managed_sessions()
     protected_profiles = {
         str(config.BROWSER_PROFILES_DIR / key) for key in _ACTIVE_LOCAL_PROFILES
@@ -411,14 +421,19 @@ _seat_gate = asyncio.Lock()
 
 
 async def acquire_seat(timeout: float = _SEAT_WAIT_TIMEOUT) -> None:
-    """Pre-flight seat guard for any CloakBrowser launch (任务/检测/开浏览器).
+    """Pre-flight seat guard for local CloakBrowser launches.
 
-    Server seats are counted per key and freed by TTL — there is no revoke
+    Local SDK seats are counted per key and freed by TTL — there is no revoke
     API (probed: release/revoke/close all 404). So the strategy is:
     if the server reports a full house, clean everything we own and WAIT for
     the TTL to release zombie seats, instead of launching into a guaranteed
     license kill. Serializes concurrent acquirers via a module lock.
     """
+    if await cdp_configured():
+        # cloakserve owns licensing for CDP and fails a truly full launch fast;
+        # a stale/remote SDK seat count must not block fingerprint checks.
+        return
+
     async with _seat_gate:
         active, limit = await asyncio.to_thread(server_seats)
         if active is None or limit is None or active < limit:
@@ -582,21 +597,21 @@ async def reclaim_manual_sessions() -> int:
 async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
                                   profile_key: str | None = None,
                                   proxy_server: str = ""):
-    """launch_for_account + automatic seat recovery (pre-flight and on kill).
+    """launch_for_account + automatic local-seat recovery.
 
-    CloakBrowser Pro counts seats server-side; a graceful close frees the seat
-    at once, a license-killed zombie seat expires after a server-side TTL and
-    there is no revoke API. So: pre-flight acquire_seat() waits out a full
-    house (auto-cleaning our own windows first), and if the launch is still
-    license-killed post-handshake, force_free_seats + retry once. 账号任务 /
-    指纹检测 / 打开浏览器 thus self-heal instead of demanding manual cleanup.
+    CDP delegates licensing to cloakserve, so it neither waits on the app's
+    SDK seat count nor runs the local force-free/retry path.
     """
-    await acquire_seat()
+    remote_cdp = await cdp_configured()
+    if not remote_cdp:
+        await acquire_seat()
     try:
         return await launch_for_account(account_fp, browser_mode,
                                         profile_key=profile_key,
                                         proxy_server=proxy_server)
     except SessionLimitError:
+        if remote_cdp:
+            raise
         if not await force_free_seats():
             raise SessionLimitError(session_limit_message())
         return await launch_for_account(account_fp, browser_mode,
