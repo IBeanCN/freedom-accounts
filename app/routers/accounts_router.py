@@ -18,8 +18,8 @@ from .deps import require_admin
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_admin)])
 
 _BUSY_MESSAGES = {
-    "queued": "账号在上号队列中，请稍后再试",
-    "running": "账号正在上号，请稍后再试",
+    "queued": "账号在任务队列中，请稍后再试",
+    "running": "账号任务正在执行，请稍后再试",
     "token_queued": "账号在刷新 Token 队列中，请稍后再试",
     "token_running": "账号正在刷新 Token，请稍后再试",
 }
@@ -89,7 +89,7 @@ async def list_accounts(group_id: Optional[int] = None):
     for r in await rows.fetchall():
         d = dict(r)
         d["fingerprint"] = fp_mod.sanitize(d.get("fingerprint"))
-        # 凭据只暴露是否存在，用于上号前的前端提示；值永不回传前端。
+        # 凭据只暴露是否存在，用于任务执行前的前端提示；值永不回传前端。
         d["has_password"] = bool(d.pop("password", None))
         d["has_totp"] = bool(d.pop("totp_secret", ""))
         # upstream status is display-only: translate at the API layer so the
@@ -270,10 +270,10 @@ async def stop_account_run(account_id: int):
     if account["last_status"] in ("token_queued", "token_running"):
         raise HTTPException(409, "正在刷新 Token，暂不支持从这里停止")
     if account["last_status"] not in ("queued", "running"):
-        raise HTTPException(409, "账号当前没有上号任务")
+        raise HTTPException(409, "账号当前没有执行中的任务")
     action = await scheduler.stop_account(account_id)
     if action == "not_running":
-        raise HTTPException(409, "账号当前没有上号任务")
+        raise HTTPException(409, "账号当前没有执行中的任务")
     return {"ok": True, "action": action}
 
 
@@ -367,7 +367,7 @@ async def refresh_token(account_id: int):
     if not token_refresh.has_valid_expiry(row):
         raise HTTPException(400, "账号缺少可识别的 Token 过期时间，请先同步账号")
     if token_refresh.is_account_busy(row["last_status"]):
-        raise HTTPException(409, "账号正在上号或刷新 Token，请稍后再试")
+        raise HTTPException(409, "账号正在执行任务或刷新 Token，请稍后再试")
     if token_refresh.is_active():
         raise HTTPException(409, "已有 Token 刷新队列正在执行，请稍后再试")
     if not await token_refresh.queue_refresh([account_id]):

@@ -69,7 +69,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET | `/api/meta` | 注册表下发：`login_types`（流程适配器）/ `group_types`（平台注册表），驱动前端下拉 |
 | GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理） |
 | PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`）/ 删除分组 |
-| POST | `/api/groups/{id}/start` | 分组一键上号；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且入队上游状态 `error` 或无上游账号 ID 的本地手动启用账号。上号前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
+| POST | `/api/groups/{id}/start` | 分组一键执行；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且入队上游状态 `error` 或无上游账号 ID 的本地手动启用账号。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/groups/{id}/open-browser` | 打开常驻交互浏览器（本地 SDK 引擎专用：配置了 `cloak_cdp_url` 时 409 拒绝）。用分组指纹模板（无模板则全随机，seed 必随机）+ 分组代理、有头模式；按组幂等（`reused:true` 表示复用已开窗口），不自动关闭，`/close-browser` 或服务停止时关闭 |
 | POST | `/api/groups/{id}/close-browser` | 关闭该分组的常驻交互浏览器（无会话时 `closed:false`，幂等） |
 | POST | `/api/groups/{id}/regenerate-fingerprints` | 批量换指纹（`mode`: seed_only / from_template / random；body 可选 `account_ids`，有值只改选中账号，空/缺省改全部账号） |
@@ -79,8 +79,8 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组代理和分组指纹模板） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
-| POST | `/api/accounts/start` | 按账号批量上号（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。上号前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
-| POST | `/api/accounts/{id}/stop` | 优雅停止上号：队列中直接移除；上号中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持上号，不支持刷新 Token |
+| POST | `/api/accounts/start` | 按账号批量执行任务（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
+| POST | `/api/accounts/{id}/stop` | 优雅停止任务：队列中直接移除；执行中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持账号任务，不支持刷新 Token |
 | POST | `/api/accounts/{id}/refresh-token` | 账号级刷新 Token；要求启用、上游状态「正常」、过期时间可解析且非运行态，忽略批量用的 30 分钟窗口；成功入队后写入 `token_refresh` 任务日志 |
 | POST | `/api/accounts/batch-delete` | 批量删除选中账号；`account_ids` 必填，任一账号处于四种运行态时整批 409 拒绝 |
 | POST | `/api/accounts/{id}/regenerate-fingerprint` | 重新生成指纹；四种运行态账号 409 拒绝 |
@@ -98,7 +98,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 ### 代理生效链路（2026-09-21）
 
 - 优先级：**账号 `accounts.proxy_id` > 分组 `groups.proxy_id`**，两者皆空 = 直连。
-- 解析入口 `browser.resolve_proxy(account_proxy_id, group_proxy_id)` 返回完整代理 URL；`scheduler._execute`（上号）与 `fpcheck.run_check` / `run_group_check`（指纹检测）都会先解析再传给 `browser.launch_for_account(..., proxy_server=...)`。
+- 解析入口 `browser.resolve_proxy(account_proxy_id, group_proxy_id)` 返回完整代理 URL；`scheduler._execute`（账号任务）与 `fpcheck.run_check` / `run_group_check`（指纹检测）都会先解析再传给 `browser.launch_for_account(..., proxy_server=...)`。
 - 指纹检测地址解析入口 `fpcheck.resolve_check_url(group_row)`：**分组 `fp_check_url` > 系统设置 `fp_check_url`**；两处皆空返回 `None`（不再静默回退内置默认），调用方须提示 `fpcheck.NO_URL_MSG`。后台任务兜底会把「失败: 未配置…」写回 `fp_check_result`；API 层在启动前已用同一逻辑拦截（400）。
 - 三个引擎均支持：cloakserve CDP 以 `&proxy=<url>` 查询参数下发；CloakBrowser SDK 与 Playwright 用 `proxy={"server": url}` 启动参数。
 
@@ -116,7 +116,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 ### 回调与适配器约定（2026-09 起）
 
 - 分组不再有「回调地址 / Header JSON」：上游集成全部在**流程适配器内部**完成，不在页面暴露。
-- 适配器可选实现 5 个凭证操作：`list_accounts` / `get_account` / `auth_link` / `redeem_token` / `refresh_token`（见 `flows/adapters/base.py`）。每次调用写 `adapter_logs` 表；当前仅 `refresh_token` 由账号页面 API 触发，其余凭证操作仍仅供同步/上号内部调用。
+- 适配器可选实现 5 个凭证操作：`list_accounts` / `get_account` / `auth_link` / `redeem_token` / `refresh_token`（见 `flows/adapters/base.py`）。每次调用写 `adapter_logs` 表；当前仅 `refresh_token` 由账号页面 API 触发，其余凭证操作仍仅供同步/任务执行内部调用。
 - `groups.callback_url` / `header_json` 为遗留列：数据库保留、接口不再接受、列表不再返回。
 
 ### Token 自动刷新（2026-09-22）
@@ -124,15 +124,15 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 - 应用启动后运行内部 asyncio 定时任务：启动时先巡检一次，之后按系统设置 `token_refresh_interval_seconds` 休眠，默认 3600 秒。
 - 巡检范围是所有适配器真正实现 `refresh_token` 的分组；每组先同步上游，再复用一键批量筛选规则（启用 + 上游正常 + Token 过期时间可解析 + 剩余寿命 ≤30 分钟）。
 - 多个分组的到期账号合并为一个串行队列，账号间仍随机间隔 5–20 秒；正在刷新的账号跳过本轮。
-- 账号最新运行态包括 `never`（未运行）、`queued`（上号队列中）、`running`（正在上号）、`token_queued`（刷新 Token 队列中）、`token_running`（正在刷新 Token）、`success`（已完成）、`failed`（失败）和 `cancelled`（已手动停止）；四种运行态统一禁止重复上号、刷新、停用、删除、换指纹和指纹检测。
+- 账号最新运行态包括 `never`（未运行）、`queued`（任务队列中）、`running`（正在执行）、`token_queued`（刷新 Token 队列中）、`token_running`（正在刷新 Token）、`success`（已完成）、`failed`（失败）和 `cancelled`（已手动停止）；四种运行态统一禁止重复执行、刷新、停用、删除、换指纹和指纹检测。
 
-### OpenAI 授权上号（sub2api / cpr 通用架构，2026-09-22）
+### OpenAI 授权任务（sub2api / cpr 通用架构，2026-09-22）
 
-复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，上号时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
+复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，执行任务时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
 
 - **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等）→ 持续点 Continue → 轮询等 localhost 回调（300s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
-- **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键上号；CPR 请求授权链接时省略 `accountId`。
-- **上号冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。
+- **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键执行；CPR 请求授权链接时省略 `accountId`。
+- **执行冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。
 - **上游差异只在凭证操作**：
   - sub2api：`POST {login_url}/api/v1/openai/generate-auth-url {account_id}` → `{session_id, auth_url}`；`POST /openai/exchange-code {code, state, session_id}`（重试 5 次）；成功后 best-effort `recover-state` + `schedulable`。Header `x-api-key`；响应 envelope 宽容解析；账号按 email 匹配、`accounts.remote_id` 优先；`refresh_token` 未实现（上游无端点）。
   - cpr：`POST /api/admin/accounts/oauth/start` → `{flowId, authorizationUrl}`；`POST /api/admin/accounts/oauth/complete {flowId, callbackUrl}`；见文件头 wire contract。

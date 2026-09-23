@@ -74,7 +74,7 @@ async def enqueue(group_id: int, account_ids: list[int]) -> int:
         # 入队即对外可见，防止前端在任务真正启动前重复提交。
         marks = ",".join("?" * len(queued))
         await db.execute(
-            f"""UPDATE accounts SET last_status='queued', last_message='上号队列中'
+            f"""UPDATE accounts SET last_status='queued', last_message='任务队列中'
                 WHERE id IN ({marks})""", tuple(queued))
         await db.commit()
         return len(queued)

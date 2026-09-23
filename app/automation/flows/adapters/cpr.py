@@ -1,6 +1,6 @@
 """CPR (codex-proxy-rs) flow adapter.
 
-上号 flow = 纯编排（auth_link → 共享浏览器授权段 → redeem_token），
+任务 flow = 纯编排（auth_link → 共享浏览器授权段 → redeem_token），
 浏览器操作零上游耦合；上游差异集中在凭证操作（管理面 HTTP API）。
 
 Upstream wire contract (verified against the codex-proxy-rs source):
@@ -127,7 +127,7 @@ def run_cpr_sync(ctx, username: str, password: str, totp_secret: str,
                  account: dict | None = None) -> dict:
     steps.append({"t": now(), "step": "cpr_unsupported",
                   "detail": "OAuth 授权流程仅支持异步引擎", "ok": False})
-    raise RuntimeError("CPR（OpenAI 授权上号）仅支持异步引擎（scheduler 当前均为 async）")
+    raise RuntimeError("CPR（OpenAI 授权任务）仅支持异步引擎（scheduler 当前均为 async）")
 
 
 # ---------------- async flavor: 编排（共享浏览器段） ----------------

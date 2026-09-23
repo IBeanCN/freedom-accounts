@@ -320,7 +320,7 @@ _seat_gate = asyncio.Lock()
 
 
 async def acquire_seat(timeout: float = _SEAT_WAIT_TIMEOUT) -> None:
-    """Pre-flight seat guard for any CloakBrowser launch (上号/检测/开浏览器).
+    """Pre-flight seat guard for any CloakBrowser launch (任务/检测/开浏览器).
 
     Server seats are counted per key and freed by TTL — there is no revoke
     API (probed: release/revoke/close all 404). So the strategy is:
@@ -485,7 +485,7 @@ async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
     at once, a license-killed zombie seat expires after a server-side TTL and
     there is no revoke API. So: pre-flight acquire_seat() waits out a full
     house (auto-cleaning our own windows first), and if the launch is still
-    license-killed post-handshake, force_free_seats + retry once. 上号 /
+    license-killed post-handshake, force_free_seats + retry once. 账号任务 /
     指纹检测 / 打开浏览器 thus self-heal instead of demanding manual cleanup.
     """
     await acquire_seat()

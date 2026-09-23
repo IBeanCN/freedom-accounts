@@ -375,7 +375,7 @@ async def start_group(group_id: int, body: StartBody):
     # pre-validation: config must be complete before any sync or start
     errors = []
     if not (g["login_url"] or "").strip():
-        errors.append("上号地址未配置")
+        errors.append("任务地址未配置")
     if g["login_type"] in ("sub2api", "cpr") and not (g["upstream_key"] or "").strip():
         errors.append("上游 API Key 未配置")
     if errors:
@@ -429,7 +429,7 @@ async def start_group(group_id: int, body: StartBody):
 
     if not error_accounts:
         return {"ok": True, "queued": 0, "error_count": 0, "sync": sync_result,
-                "message": "同步完成，没有上游状态为「错误」或本地手动新增的启用账号，无需上号"}
+                "message": "同步完成，没有上游状态为「错误」或本地手动新增的启用账号，无需执行任务"}
 
     # step 3) enqueue only the error accounts
     error_ids = [r["id"] for r in error_accounts]

@@ -1,6 +1,6 @@
 # freedom-accounts 设计规范
 
-> 本文件是 **freedom-accounts（批量上号平台）** 视觉与交互的唯一权威说明，供后续前端开发直接参照。
+> 本文件是 **freedom-accounts（账号任务平台）** 视觉与交互的唯一权威说明，供后续前端开发直接参照。
 > 配套的可执行文件为 `web/tokens.css`（设计变量）与 `web/style.css`（组件库）；画布设计稿见文末「设计稿索引」。
 
 ---
@@ -28,7 +28,7 @@
 
 1. **内容优先，装饰退后。** 这是一个运维控制台，用户来这里是「看清状态、快速操作」，不是来欣赏界面的。任何不承载信息的视觉元素都应删掉。
 2. **用留白和描边表达结构，而不是用线条和阴影堆砌。** 页面底色（羊皮纸灰）与卡片底色（纯白）之间的 1px 差异，已经足够划出层级。
-3. **一屏之内只允许一个主操作。** 每个页面右上角只有一个 `btn-primary`；分组卡操作区的「一键上号」是局部主操作，用同色但降一档尺寸（`btn-sm`）表达。账号面板头部批量操作统一用 `.btn-secondary.btn-sm`。
+3. **一屏之内只允许一个主操作。** 每个页面右上角只有一个 `btn-primary`；分组卡操作区的「一键执行」是局部主操作，用同色但降一档尺寸（`btn-sm`）表达。账号面板头部批量操作统一用 `.btn-secondary.btn-sm`。
 4. **危险操作必须二次确认，且用颜色和措辞共同提示后果。** 确认框文案要说清「会连带删除什么」，而不是只问「确定吗」。
 5. **状态用颜色 + 文字双重编码。** 色盲用户仅靠红色无法区分「失败」与「回调失败」，所以徽标里始终带文字。
 
@@ -127,8 +127,8 @@
 | 值 | 文案 | 徽标类 | 颜色 |
 | --- | --- | --- | --- |
 | `never` | 未运行 | `chip-muted` | 中性灰 |
-| `queued` | 上号队列中 | `chip-warning` | 橙 |
-| `running` | 正在上号 | `chip-info` | 强调蓝 |
+| `queued` | 任务队列中 | `chip-warning` | 橙 |
+| `running` | 正在执行 | `chip-info` | 强调蓝 |
 | `token_queued` | 刷新Token队列中 | `chip-warning` | 橙 |
 | `token_running` | 正在刷新Token | `chip-info` | 强调蓝 |
 | `success` | 已完成 | `chip-success` | 绿 |
@@ -152,14 +152,14 @@
 | 值 | 文案 | 徽标类 | 颜色 |
 | --- | --- | --- | --- |
 | `pending` | 排队中 | `chip-warning` | 橙 |
-| `queued` | 上号队列中 / 刷新Token队列中* | `chip-warning` | 橙 |
-| `running` | 正在上号 | `chip-info` | 强调蓝 |
+| `queued` | 任务队列中 / 刷新Token队列中* | `chip-warning` | 橙 |
+| `running` | 正在执行 | `chip-info` | 强调蓝 |
 | `success` | 已完成 | `chip-success` | 绿 |
 | `failed` | 失败 | `chip-danger` | 红 |
 | `callback_failed` | 回调失败 | `chip-danger` | 红 |
 | `cancelled` | 已停止 | `chip-muted` | 中性灰 |
 
-> `operation=token_refresh` 的 `queued` / `running` 由 `taskStatusChip()` 显示为「刷新Token队列中」/「正在刷新Token」；其他任务显示上号语义。账号侧四种运行态统一禁用重复操作按钮。
+> `operation=token_refresh` 的 `queued` / `running` 由 `taskStatusChip()` 显示为「刷新Token队列中」/「正在刷新Token」；其他任务显示任务执行语义。账号侧四种运行态统一禁用重复操作按钮。
 
 **回调状态（`tasks.callback_status`）**
 
@@ -325,7 +325,7 @@
 
 ```html
 <span class="cell-actions">
-  <button class="link-btn" type="button">上号</button>
+  <button class="link-btn" type="button">执行</button>
   <button class="link-btn" type="button">编辑</button>
   <button class="link-btn is-danger" type="button">删除</button>
 </span>
@@ -483,7 +483,7 @@ toast("密码不能为空", true);    // 错误
 
 - **页面骨架**：`.settings-group`（语义分组）> `.settings-group-head`（`.section-title` + `.settings-group-hint`）+ `.settings-grid`（两列 `repeat(2, minmax(0, 1fr))`，`align-items: stretch`）。
 - **同排卡片等高、操作按钮贴底**：由 `.setting-body { flex: 1 }` + `.setting-foot { margin-top: var(--fa-space-4) }` 保证，**不要**给 `.setting-card` 写死高度。
-- **分组按语义划分，同排按体量配对**：内容体量悬殊的两张卡（"一个输入框" 配 "五行状态 + 输入框"）放同一行，短卡会留下大片空白。当前三组为 **上号环境 / 指纹环境 / 数据与安全**。
+- **分组按语义划分，同排按体量配对**：内容体量悬殊的两张卡（"一个输入框" 配 "五行状态 + 输入框"）放同一行，短卡会留下大片空白。当前三组为 **任务环境 / 指纹环境 / 数据与安全**。
 - **只读状态用 `.status-list`**：两列键值规格块（列定义 `max-content minmax(0, 1fr)` ×2），键 12px `--fa-text-3`、值 13px `--fa-ink` 带 `tabular-nums`；`align-items: baseline` 保证同基线对齐；≤960px 收成单列键值。
 - **单值字段用 `.field-narrow`**（≤180px）：数值型输入占满整行会与说明文字比例失衡。
 - 卡片内的动作按钮**必须**收在 `.setting-foot` 内 —— `scripts/layout-check.py` 会断言这一点。
@@ -527,8 +527,8 @@ toast("密码不能为空", true);    // 错误
 - 两个状态的载体是分开的：`is-selected`（卡体写入）、`is-open`（箭头写入）。**`selectGroup()` 里不允许出现 `is-open` 或 `expandedGroups`** —— 只要写一行，点卡体就会顺带把操作项摊开。这是本节最容易写错的地方。
 - 反过来同样成立：`toggleGroupCard()` 不碰 `is-selected` 与 `#accounts-panel`。操作项已展开时点卡体，展开态**保持不变**（不会顺手收起）。
 - 语义归属随之调整：`aria-expanded` + `aria-controls`（指向 `group-actions-{id}`）挂在**箭头**上，卡体挂 `aria-current`。卡体不再是「可展开」，它只是一个可选择项。
-- **箭头必须可键盘聚焦**（去掉 `tabindex="-1"`）—— 它现在是操作项的唯一入口，不可聚焦等于键盘用户拿不到「一键上号」。随之需要一条事件守卫：卡体的 `keydown` 处理器在 `e.target !== el` 时立即返回，否则焦点停在箭头上按 Enter 会同时触发「展开操作项」和「打开账号列表」。
-- 取舍：这个模型让「一键上号」从一次点击变成两次。换来的是一次走神不会让卡片炸开六行按钮 —— 卡片高度稳定，网格不跳。
+- **箭头必须可键盘聚焦**（去掉 `tabindex="-1"`）—— 它现在是操作项的唯一入口，不可聚焦等于键盘用户拿不到「一键执行」。随之需要一条事件守卫：卡体的 `keydown` 处理器在 `e.target !== el` 时立即返回，否则焦点停在箭头上按 Enter 会同时触发「展开操作项」和「打开账号列表」。
+- 取舍：这个模型让「一键执行」从一次点击变成两次。换来的是一次走神不会让卡片炸开六行按钮 —— 卡片高度稳定，网格不跳。
 
 **不要在这一页加指标条**，理由见 §7.6。
 
@@ -672,16 +672,16 @@ toast("密码不能为空", true);    // 错误
 
 ### 11.4 账号 Token 刷新（2026-09-22）
 
-账号面板的批量操作区使用既有的 `.btn-secondary.btn-sm`，账号行使用既有的 `.link-btn`，不新增组件。批量入口标题随勾选范围变化；四种运行态禁用上号、刷新、换指纹、指纹检测和删除按钮，批量 Token 刷新在有账号运行时禁用。新增 API 为 `/api/groups/:id/refresh-tokens` 与 `/api/accounts/:id/refresh-token`，业务约束以后端契约为准。
+账号面板的批量操作区使用既有的 `.btn-secondary.btn-sm`，账号行使用既有的 `.link-btn`，不新增组件。批量入口标题随勾选范围变化；四种运行态禁用任务执行、刷新、换指纹、指纹检测和删除按钮，批量 Token 刷新在有账号运行时禁用。新增 API 为 `/api/groups/:id/refresh-tokens` 与 `/api/accounts/:id/refresh-token`，业务约束以后端契约为准。
 系统设置卡复用 `.setting-card` 三段结构，新增「Token 自动刷新」执行间隔输入；定时巡检复用同一套后端规则。
 
 ### 11.5 账号添加弹窗（2026-09-22）
 
 添加账号复用 `.segmented` 切换「单个添加」与「批量添加」，批量输入使用既有 `.textarea`，每行格式为 `邮箱|密码|2FA密钥`（2FA 可选）。同分组重复账号由后端跳过；批量输入中的重复行直接去重，结果文案区分新增与跳过数量。浏览器模式、代理和指纹配置收进「分组默认环境」折叠区；折叠区未修改时分别提交 `inherit`、`null` 和 `{}`，由后端按分组浏览器模式、分组代理和分组指纹模板落库。账号表单不展示代理可选项，仅以徽标显示「跟随分组代理」或已有账号代理；编辑时原样保留既有 `proxy_id`，不提供账号级修改入口。
 
-### 11.6 上号停止（2026-09-23）
+### 11.6 任务停止（2026-09-23）
 
-账号行在上号队列中或上号中显示既有 `.link-btn`「停止」入口，二次确认后调用 `/api/accounts/:id/stop`。队列中直接移除；上号中由后端中断后续流程、关闭指纹浏览器后返回。结果复用既有账号/任务状态徽标，新增 `cancelled` 显示为「已停止」。
+账号行在任务队列中或执行中显示既有 `.link-btn`「停止」入口，二次确认后调用 `/api/accounts/:id/stop`。队列中直接移除；执行中由后端中断后续流程、关闭指纹浏览器后返回。结果复用既有账号/任务状态徽标，新增 `cancelled` 显示为「已停止」。
 
 ---
 

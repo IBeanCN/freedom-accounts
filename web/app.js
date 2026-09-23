@@ -150,9 +150,9 @@ function showMain() {
 }
 
 const TAB_META = {
-  groups: { title: "分组与账号", sub: "按分组管理账号与浏览器指纹，一键批量上号（回调由适配器内部完成）" },
-  tasks: { title: "任务日志", sub: "查看上号任务的执行状态、步骤明细与适配器操作记录" },
-  proxies: { title: "代理管理", sub: "维护上号代理：测试连通性、出口 IP 与耗时（ipify）" },
+  groups: { title: "分组与账号", sub: "按分组管理账号与浏览器指纹，一键批量执行账号任务" },
+  tasks: { title: "任务日志", sub: "查看账号任务的执行状态、步骤明细与适配器操作记录" },
+  proxies: { title: "代理管理", sub: "维护任务代理：测试连通性、出口 IP 与耗时（ipify）" },
   settings: { title: "系统设置", sub: "浏览器模式、指纹引擎、日志保留与管理员凭据" },
 };
 
@@ -220,8 +220,8 @@ const STATUS_MAP = {
   success: { label: "已完成", cls: "chip-success" },
   failed: { label: "失败", cls: "chip-danger" },
   callback_failed: { label: "回调失败", cls: "chip-danger" },
-  queued: { label: "上号队列中", cls: "chip-warning" },
-  running: { label: "正在上号", cls: "chip-info" },
+  queued: { label: "任务队列中", cls: "chip-warning" },
+  running: { label: "正在执行", cls: "chip-info" },
   token_queued: { label: "刷新Token队列中", cls: "chip-warning" },
   token_running: { label: "正在刷新Token", cls: "chip-info" },
   pending: { label: "排队中", cls: "chip-warning" },
@@ -301,13 +301,13 @@ async function loadProxiesSilent() {
   } catch (_) { state.proxies = []; }
 }
 
-/* 注册表下拉（/api/meta）：分组类型 = 平台注册表，上号类型 = 流程适配器，fp_options = 指纹候选池 */
+/* 注册表下拉（/api/meta）：分组类型 = 平台注册表，任务类型 = 流程适配器，fp_options = 指纹候选池 */
 async function loadMeta() {
   try {
     state.meta = await api("/api/meta");
   } catch { state.meta = { login_types: [], group_types: [], fp_options: null }; }
   fillSelect($("#g-group_type"), state.meta.group_types.map((p) => ({ value: p.key, label: p.label })), "请选择分组类型");
-  fillSelect($("#g-login_type"), state.meta.login_types.map((a) => ({ value: a.key, label: a.label })), "请选择上号类型");
+  fillSelect($("#g-login_type"), state.meta.login_types.map((a) => ({ value: a.key, label: a.label })), "请选择任务类型");
   buildFpStaticSelects();
 }
 
@@ -323,7 +323,7 @@ function fillSelect(sel, items, placeholder) {
   });
 }
 
-/* 上号类型 key -> 卡片短名（未注册的存量值原样显示；括号内的引擎说明不下沉到卡片） */
+/* 任务类型 key -> 卡片短名（未注册的存量值原样显示；括号内的引擎说明不下沉到卡片） */
 function loginTypeLabel(key) {
   const a = state.meta.login_types.find((x) => x.key === key);
   return a ? (a.label.split(/[（(]/)[0].trim() || key) : (key || "—");
@@ -385,7 +385,7 @@ function groupCard(g) {
       </button>
     </div>
     <div class="group-actions" id="group-actions-${g.id}">
-      <button class="btn btn-primary btn-sm" type="button" data-act="start">一键上号</button>
+      <button class="btn btn-primary btn-sm" type="button" data-act="start">一键执行</button>
       <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="open-browser">打开浏览器</button>
       <button class="btn btn-secondary btn-sm ${state.localEngine ? "" : "hidden"}" type="button" data-act="close-browser">关闭浏览器</button>
       <button class="btn btn-secondary btn-sm" type="button" data-act="sync">同步账号</button>
@@ -731,7 +731,7 @@ function buildFpStaticSelects() {
 
 /* ---------- 分组表单 ---------- */
 
-/* 分组类型 -> 上号地址占位/提示、上号类型默认值联动 */
+/* 分组类型 -> 任务地址占位/提示、任务类型默认值联动 */
 function syncGroupTypeHints() {
   const key = $("#g-group_type").value;
   const p = state.meta.group_types.find((x) => x.key === key);
@@ -746,7 +746,7 @@ function syncGroupTypeHints() {
 $("#g-group_type").addEventListener("change", () => {
   const key = $("#g-group_type").value;
   const p = state.meta.group_types.find((x) => x.key === key);
-  // 新建时按平台默认值选中上号类型；编辑时不覆盖已存值
+  // 新建时按平台默认值选中任务类型；编辑时不覆盖已存值
   if (!state.editingGroup && p?.default_login_type) $("#g-login_type").value = p.default_login_type;
   syncGroupTypeHints();
 });
@@ -1043,7 +1043,7 @@ function updateAccountSelectionUI() {
     state.selectedAccounts.has(String(a.id)) && isAccountBusy(a));
   $("#btn-batch-delete").disabled = selected === 0 || selectedBusy;
   const scope = selected ? `已选 ${selected}` : "ALL";
-  $("#btn-group-start").textContent = `一键上号（${scope}）`;
+  $("#btn-group-start").textContent = `一键执行（${scope}）`;
   $("#btn-batch-fp").textContent = `批量换指纹（${scope}）`;
   const refreshing = state.accounts.some(isAccountBusy);
   $("#btn-batch-refresh-token").disabled = refreshing;
@@ -1097,7 +1097,7 @@ function accountRow(a, gid) {
     <td><span class="cell-muted">${esc(fmtTime(a.last_run_at))}</span></td>
     <td>
       <span class="cell-actions">
-        ${on ? `<button class="link-btn" type="button" data-act="run" ${busy ? "disabled" : ""}>${a.last_status === "running" ? "上号中…" : busy ? "队列中…" : "上号"}</button>
+        ${on ? `<button class="link-btn" type="button" data-act="run" ${busy ? "disabled" : ""}>${a.last_status === "running" ? "执行中…" : busy ? "队列中…" : "执行"}</button>
         <button class="link-btn" type="button" data-act="fp" ${busy ? "disabled" : ""}>换指纹</button>
         <button class="link-btn" type="button" data-act="refresh-token" ${busy ? "disabled" : ""}>${tokenBusy ? "刷新中…" : "刷新Token"}</button>
         <button class="link-btn" type="button" data-act="fpcheck" ${busy || a.fp_check_result === "检测中" ? "disabled" : ""}>${a.fp_check_result === "检测中" ? "检测中…" : "指纹检测"}</button>
@@ -1194,16 +1194,16 @@ async function accountRun(a) {
 async function stopAccountRun(a, gid) {
   const queued = a.last_status === "queued";
   const ok = await confirmDialog({
-    title: `停止上号：${a.username}`,
+    title: `停止任务：${a.username}`,
     message: queued
       ? "该账号仍在队列中，停止后会直接从队列移除。"
-      : "该账号正在上号，停止后会中断后续流程并关闭指纹浏览器。",
+      : "该账号任务正在执行，停止后会中断后续流程并关闭指纹浏览器。",
     okText: "停止",
   });
   if (!ok) return;
   try {
     const d = await api(`/api/accounts/${a.id}/stop`, { method: "POST" });
-    toast(d.action === "queued_removed" ? "已从队列移除" : "上号任务已停止");
+    toast(d.action === "queued_removed" ? "已从队列移除" : "账号任务已停止");
     await loadAccounts(gid);
   } catch (e) { toast(e.message, true); }
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>freedom-accounts · 批量上号平台</title>
+<title>freedom-accounts · 账号任务平台</title>
 <script>
 /* 主题引导：在样式生效前确定明暗模式，避免暗色下首屏闪白。
    选择的优先级：用户上次的显式选择 > 系统外观偏好。 */
@@ -30,7 +30,7 @@
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none"><path d="M12 2.6l7.2 3.1v6.4c0 4.6-3 8.6-7.2 10.2-4.2-1.6-7.2-5.6-7.2-10.2V5.7L12 2.6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.7 12.2l2.4 2.4 4.4-4.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </span>
       <h1 class="auth-title">freedom-accounts</h1>
-      <p class="auth-sub">批量上号平台 · 管理员登录</p>
+      <p class="auth-sub">账号任务平台 · 管理员登录</p>
     </div>
     <form id="login-form" class="auth-form">
       <label class="field">
@@ -58,7 +58,7 @@
       </span>
       <span class="rail-brand-text">
         <span class="rail-name">freedom-accounts</span>
-        <span class="rail-sub">批量上号平台</span>
+        <span class="rail-sub">账号任务平台</span>
       </span>
     </div>
 
@@ -110,7 +110,7 @@
     <header class="topbar">
       <div class="page-lead">
         <h1 class="page-title" id="page-title">分组与账号</h1>
-        <p class="page-sub" id="page-sub">按分组管理账号与浏览器指纹，一键批量上号并回调上游</p>
+        <p class="page-sub" id="page-sub">按分组管理账号与浏览器指纹，一键批量执行账号任务</p>
       </div>
       <div class="page-actions">
         <div class="act-set hidden" data-for="tasks">
@@ -159,7 +159,7 @@
               </select>
             </div>
             <button id="btn-new-account" class="btn btn-secondary btn-sm" type="button">添加账号</button>
-            <button id="btn-group-start" class="btn btn-secondary btn-sm" type="button">一键上号（ALL）</button>
+            <button id="btn-group-start" class="btn btn-secondary btn-sm" type="button">一键执行（ALL）</button>
             <button id="btn-batch-fp" class="btn btn-secondary btn-sm" type="button">批量换指纹</button>
             <button id="btn-batch-refresh-token" class="btn btn-secondary btn-sm" type="button">一键刷新Token</button>
             <button id="btn-batch-delete" class="btn btn-secondary is-danger btn-sm" type="button" disabled>删除账号</button>
@@ -275,7 +275,7 @@
 
         <section class="settings-group">
           <div class="settings-group-head">
-            <h2 class="section-title">上号环境</h2>
+            <h2 class="section-title">任务环境</h2>
             <span class="settings-group-hint">浏览器以什么模式运行、检测时打开哪个站点</span>
           </div>
           <div class="settings-grid">
@@ -471,7 +471,7 @@
   <form id="form-group" method="dialog">
     <div class="dlg-head">
       <h3 class="dlg-title" id="dlg-group-title">新建分组</h3>
-      <p class="dlg-sub">配置分组类型、上号地址与上游 Key，保存后即可批量上号。</p>
+      <p class="dlg-sub">配置分组类型、任务地址与上游 Key，保存后即可批量执行任务。</p>
     </div>
     <div class="dlg-body">
       <div class="form-section">
@@ -487,21 +487,21 @@
           </label>
         </div>
         <label class="field">
-          <span class="field-label">上号类型 *</span>
+          <span class="field-label">任务类型 *</span>
           <select id="g-login_type" class="select" required></select>
           <span class="field-hint" id="g-login_type_hint"></span>
         </label>
       </div>
 
       <div class="form-section">
-        <span class="form-section-title">上号与鉴权</span>
+        <span class="form-section-title">任务与鉴权</span>
         <label class="field">
-          <span class="field-label">上号地址 *</span>
+          <span class="field-label">任务地址 *</span>
           <input id="g-login_url" class="input" placeholder="https://..." required>
           <span class="field-hint" id="g-login_url_hint"></span>
         </label>
         <label class="field">
-          <span class="field-label">上号 Key（上游鉴权，可选）</span>
+          <span class="field-label">任务 Key（上游鉴权，可选）</span>
           <input id="g-upstream_key" class="input" placeholder="适配器请求上游时自动携带">
           <span class="field-hint">由适配器内部使用，不会出现在任务结果中</span>
         </label>

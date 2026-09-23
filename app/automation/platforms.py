@@ -4,8 +4,8 @@
 前端下拉、后端校验、`/api/meta` 全部自动跟随。
 
 预留钩子（当前未启用，需要时在 PlatformSpec 上加字段/方法）：
-  - default_login_type: 新建分组时前端默认选中的上号类型
-  - login_url_hint:     上号地址占位提示
+  - default_login_type: 新建分组时前端默认选中的任务类型
+  - login_url_hint:     任务地址占位提示
   - 未来可扩展：平台专属指纹模板、专属流程后处理、回调 payload 变换……
 """
 from dataclasses import dataclass, field

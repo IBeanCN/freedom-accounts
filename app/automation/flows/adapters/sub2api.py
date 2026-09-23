@@ -1,6 +1,6 @@
-"""sub2api flow adapter — OpenAI 授权上号.
+"""sub2api flow adapter — OpenAI 授权任务.
 
-上号 flow = 纯编排，浏览器操作零上游耦合：
+任务 flow = 纯编排，浏览器操作零上游耦合：
   1. auth_link（上游段）: POST /openai/generate-auth-url {account_id}
      → {flow_id=session_id, url=auth_url, account_id}
   2. 通用浏览器授权段（_openai_browser.run_browser_auth，全适配器共享）
@@ -194,7 +194,7 @@ def run_sub2api_sync(ctx, username: str, password: str, totp_secret: str,
                      account: dict | None = None) -> dict:
     steps.append({"t": now(), "step": "sub2api_unsupported",
                   "detail": "OAuth 授权流程仅支持异步引擎", "ok": False})
-    raise RuntimeError("sub2api（OpenAI 授权上号）仅支持异步引擎（scheduler 当前均为 async）")
+    raise RuntimeError("sub2api（OpenAI 授权任务）仅支持异步引擎（scheduler 当前均为 async）")
 
 
 async def run_sub2api_async(ctx, username: str, password: str, totp_secret: str,
@@ -228,7 +228,7 @@ async def run_sub2api_async(ctx, username: str, password: str, totp_secret: str,
 # ---------------- adapter ----------------
 class Sub2ApiAdapter(FlowAdapter):
     key = "sub2api"
-    label = "sub2api（OpenAI 授权上号）"
+    label = "sub2api（OpenAI 授权任务）"
     description = "指纹浏览器完成 OpenAI OAuth 授权：获取授权链接 → 自动登录 → localhost 回调 → 兑换凭证"
     run_sync = staticmethod(run_sub2api_sync)
     run_async = staticmethod(run_sub2api_async)

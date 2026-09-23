@@ -1,6 +1,6 @@
 """Login flow adapters & group-type registries.
 
-上号类型（login_type）= 流程适配器：sub2api / cpr，见 registry.py。
+任务类型（login_type）= 流程适配器：sub2api / cpr，见 registry.py。
 分组类型（group_type）= 平台注册表：目前 OpenAI，见 app/automation/platforms.py。
 
 Adapter contract (see base.py):
