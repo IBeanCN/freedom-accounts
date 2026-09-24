@@ -24,7 +24,7 @@
         <el-card shadow="never">
           <template #header>指纹浏览器引擎</template>
           <div class="cell-stack page-panel">
-            <span>当前引擎：{{ engine.engine || '—' }}</span>
+            <span>当前引擎：{{ appStore.engineTitle() }}</span>
             <span>引擎状态：{{ engine.cloak_available ? '可用' : '不可用' }}</span>
             <span>引擎版本：{{ engine.cdp_version ? `${engine.cloak_version || '—'}（CDP ${engine.cdp_version}）` : engine.cloak_version || '—' }}</span>
             <span>License Key：{{ licenseText }}</span>
@@ -136,6 +136,30 @@
         </el-card>
       </div>
       </el-tab-pane>
+
+      <el-tab-pane label="站点设置" name="site">
+        <p class="settings-tab-hint">浏览器标题与界面品牌文案；留空使用默认值</p>
+        <div class="settings-grid">
+          <el-card shadow="never" class="full-width">
+            <template #header>站点品牌</template>
+            <div class="form-grid form-grid--three">
+              <el-form-item label="页面标题">
+                <el-input v-model="siteForm.site_page_title" maxlength="120" placeholder="Freedom Accounts" />
+              </el-form-item>
+              <el-form-item label="主标题">
+                <el-input v-model="siteForm.site_main_title" maxlength="60" placeholder="Freedom Accounts" />
+              </el-form-item>
+              <el-form-item label="副标题">
+                <el-input v-model="siteForm.site_subtitle" maxlength="120" placeholder="账号任务平台" />
+              </el-form-item>
+            </div>
+            <p class="section-hint">页面标题作用于浏览器标签页；主标题和副标题用于登录页与左侧导航。留空分别恢复默认值。</p>
+            <template #footer>
+              <el-button type="primary" @click="saveSite">保存</el-button>
+            </template>
+          </el-card>
+        </div>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -155,6 +179,11 @@ const phoneError = ref('')
 const pageCountries = ref([])
 const activeTab = ref('fingerprint')
 const password = reactive({ old: '', new: '' })
+const siteForm = reactive({
+  site_page_title: '',
+  site_main_title: '',
+  site_subtitle: '',
+})
 
 const form = reactive({
   global_browser_mode: 'headless',
@@ -214,6 +243,9 @@ watch(() => appStore.settings, (settings) => {
     default_geo_timezone: settings.default_geo_timezone || '',
     default_geo_locale: settings.default_geo_locale || '',
   })
+  siteForm.site_page_title = settings.site_page_title || ''
+  siteForm.site_main_title = settings.site_main_title || ''
+  siteForm.site_subtitle = settings.site_subtitle || ''
 }, { immediate: true, deep: true })
 
 async function load() {
@@ -230,6 +262,14 @@ async function load() {
 
 async function save(body, message) {
   await appStore.saveSettings(body, message)
+}
+
+async function saveSite() {
+  await appStore.saveSettings({
+    site_page_title: siteForm.site_page_title.trim(),
+    site_main_title: siteForm.site_main_title.trim(),
+    site_subtitle: siteForm.site_subtitle.trim(),
+  }, '站点设置已保存')
 }
 
 async function loadPageCountries(savedCountry = '') {

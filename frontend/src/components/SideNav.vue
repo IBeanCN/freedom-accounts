@@ -12,8 +12,8 @@
         </svg>
       </span>
       <span>
-        <span class="rail-name">Freedom Accounts</span>
-        <span class="rail-sub">账号任务平台</span>
+        <span class="rail-name">{{ appStore.siteSettings.site_main_title }}</span>
+        <span class="rail-sub">{{ appStore.siteSettings.site_subtitle }}</span>
       </span>
     </div>
 
@@ -25,13 +25,6 @@
     </nav>
 
     <div class="rail-foot">
-      <div class="engine-card">
-        <div class="engine-head">
-          <span>浏览器引擎</span>
-          <span class="engine-dot" :class="{ 'is-off': degraded }" :title="engineTip" />
-        </div>
-        <span>{{ appStore.engineTitle() }}</span>
-      </div>
       <div class="head-inline">
         <el-button class="flex-1" @click="appStore.logout()">退出登录</el-button>
         <el-button :icon="isDark ? Sunny : Moon" @click="toggleTheme" />
@@ -53,9 +46,6 @@ const items = [
 ]
 
 const isDark = computed(() => appStore.theme === 'dark')
-const engine = computed(() => appStore.settings.engine || {})
-const degraded = computed(() => engine.value.cloak_available === false)
-const engineTip = computed(() => degraded.value ? 'CloakBrowser 不可用，已降级运行' : '指纹引擎正常')
 
 function toggleTheme() {
   const next = isDark.value ? 'light' : 'dark'

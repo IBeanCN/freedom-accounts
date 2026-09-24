@@ -114,6 +114,13 @@ async def get_task_screenshot(task_id: int, _: None = Depends(require_admin)):
 
 
 # ---------------- settings ----------------
+SITE_DEFAULTS = {
+    "site_page_title": "Freedom Accounts",
+    "site_main_title": "Freedom Accounts",
+    "site_subtitle": "账号任务平台",
+}
+
+
 class SettingsBody(BaseModel):
     global_browser_mode: str | None = Field(default=None, pattern="^(headless|headed)$")
     cloak_cdp_url: str | None = None
@@ -132,6 +139,21 @@ class SettingsBody(BaseModel):
     default_geo_city: str | None = None
     default_geo_timezone: str | None = None
     default_geo_locale: str | None = None
+    site_page_title: str | None = Field(default=None, max_length=120)
+    site_main_title: str | None = Field(default=None, max_length=60)
+    site_subtitle: str | None = Field(default=None, max_length=120)
+
+
+async def _get_site_settings() -> dict[str, str]:
+    """Effective public branding; blank stored values intentionally reset defaults."""
+    return {key: (await settings.get(key) or default).strip() or default
+            for key, default in SITE_DEFAULTS.items()}
+
+
+@router.get("/site-settings")
+async def get_site_settings():
+    """Public branding only; required before login so the shell stays consistent."""
+    return await _get_site_settings()
 
 
 @router.get("/settings")
@@ -163,6 +185,9 @@ async def get_settings(_: None = Depends(require_admin)):
         "default_geo_city": await settings.get("default_geo_city") or "",
         "default_geo_timezone": await settings.get("default_geo_timezone") or "",
         "default_geo_locale": await settings.get("default_geo_locale") or "",
+        "site_page_title": await settings.get("site_page_title") or "",
+        "site_main_title": await settings.get("site_main_title") or "",
+        "site_subtitle": await settings.get("site_subtitle") or "",
         "cloak_license_key_set": bool(browser_mod.license_key_source() != "none"),
         "engine": {**browser_mod.engine_info(), "cloak_version": browser_mod.cloak_version(),
                    "cdp_version": await browser_mod.cdp_version(cdp)},
@@ -293,6 +318,10 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
             crypto.ensure_encrypted(body.phone_verification_api_key.strip()))
     for key in ("default_geo_country", "default_geo_region", "default_geo_city",
                 "default_geo_timezone", "default_geo_locale"):
+        val = getattr(body, key)
+        if val is not None:
+            await settings.set_value(key, val.strip())
+    for key in ("site_page_title", "site_main_title", "site_subtitle"):
         val = getattr(body, key)
         if val is not None:
             await settings.set_value(key, val.strip())

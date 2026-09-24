@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     await database.close_db()
 
 
-app = FastAPI(title="freedom-accounts", lifespan=lifespan)
+app = FastAPI(title="Freedom Accounts", lifespan=lifespan)
 
 app.include_router(auth_router.router)
 app.include_router(groups_router.router)

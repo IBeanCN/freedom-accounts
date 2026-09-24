@@ -70,8 +70,12 @@ for (const component of elementComponents) {
 
 app.directive('loading', ElLoadingDirective)
 
-appStore.initAuth().finally(() => {
-  if (!window.location.hash) window.location.hash = appStore.authenticated ? '#/groups' : '#/login'
-  app.use(router)
-  app.mount('#app')
-})
+appStore.loadSiteSettings()
+  .catch(() => {})
+  .finally(() => {
+    appStore.initAuth().finally(() => {
+      if (!window.location.hash) window.location.hash = appStore.authenticated ? '#/groups' : '#/login'
+      app.use(router)
+      app.mount('#app')
+    })
+  })

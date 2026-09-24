@@ -20,6 +20,10 @@ SETTING_DEFAULTS = {
     "default_geo_city": "",
     "default_geo_timezone": "",
     "default_geo_locale": "",
+    # Site branding is public; empty values fall back to system_router.SITE_DEFAULTS.
+    "site_page_title": "",
+    "site_main_title": "",
+    "site_subtitle": "",
 }
 
 _CACHE: dict[str, str] = {}

@@ -167,30 +167,6 @@ body {
   margin-top: auto;
 }
 
-.engine-card {
-  padding: 12px;
-  border: 1px solid var(--fa-line);
-  border-radius: 6px;
-}
-
-.engine-head {
-  display: flex;
-  justify-content: space-between;
-  color: var(--fa-muted);
-  font-size: 12px;
-}
-
-.engine-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--el-color-success);
-}
-
-.engine-dot.is-off {
-  background: var(--el-color-warning);
-}
-
 .main {
   flex: 1;
   height: 100%;

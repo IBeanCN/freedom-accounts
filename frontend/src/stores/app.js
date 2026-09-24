@@ -22,11 +22,18 @@ const defaultSettings = {
   engine: {},
 }
 
+const defaultSiteSettings = {
+  site_page_title: 'Freedom Accounts',
+  site_main_title: 'Freedom Accounts',
+  site_subtitle: '账号任务平台',
+}
+
 export const appStore = reactive({
   authenticated: false,
   authChecked: false,
   theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
   settings: { ...defaultSettings },
+  siteSettings: { ...defaultSiteSettings },
   meta: { login_types: [], group_types: [], fp_options: null },
   localEngine: true,
   defaultGeo: {},
@@ -120,6 +127,11 @@ export const appStore = reactive({
   async loadSettings() {
     const settings = await api.get('/api/settings')
     this.settings = { ...defaultSettings, ...settings }
+    this.siteSettings = { ...defaultSiteSettings }
+    for (const key of Object.keys(defaultSiteSettings)) {
+      if (settings[key]) this.siteSettings[key] = settings[key]
+    }
+    this.applySiteSettings()
     this.localEngine = !String(settings.cloak_cdp_url || '').trim()
     this.defaultGeo = {
       country: settings.default_geo_country || '',
@@ -128,6 +140,16 @@ export const appStore = reactive({
       timezone: settings.default_geo_timezone || '',
       locale: settings.default_geo_locale || '',
     }
+  },
+
+  async loadSiteSettings() {
+    const settings = await api.get('/api/site-settings')
+    this.siteSettings = { ...defaultSiteSettings, ...settings }
+    this.applySiteSettings()
+  },
+
+  applySiteSettings() {
+    document.title = this.siteSettings.site_page_title || defaultSiteSettings.site_page_title
   },
 
   async saveSettings(body, successMessage) {

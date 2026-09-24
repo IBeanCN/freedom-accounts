@@ -93,7 +93,8 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET / POST | `/api/proxies` | 代理列表（含 `linked_accounts` 关联数与 `server_masked` 掩码地址）/ 新建（`name`、`server`、`custom_geo`、`country/region/city/timezone/locale`） |
 | PUT / DELETE | `/api/proxies/{id}` | 更新（`server` 留空保留原地址）/ 删除（仍被账号关联时返回 409） |
 | POST | `/api/proxies/{id}/test` | 测试连接：经代理请求 ipify 检测出口 IP 与耗时，后台执行，结果写回 `exit_ip` / `latency_ms` / `check_at` / `check_error` |
-| GET / PUT | `/api/settings` | 系统设置读写（含 `log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`phone_verification_mode` OpenAI 手机号验证模式，默认 `manual`；`auto` 必须配置国家与加密 Key，运行时缺失自动回退 manual；`phone_verification_platform` 默认接码平台，分组 `phone_platform` 空值时生效；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填） |
+| GET / PUT | `/api/settings` | 系统设置读写（含 `log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`phone_verification_mode` OpenAI 手机号验证模式，默认 `manual`；`auto` 必须配置国家与加密 Key，运行时缺失自动回退 manual；`phone_verification_platform` 默认接码平台，分组 `phone_platform` 空值时生效；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填；`site_page_title/site_main_title/site_subtitle` 站点品牌原始配置，空值回退默认） |
+| GET | `/api/site-settings` | 公开站点品牌生效值（`site_page_title/site_main_title/site_subtitle`）；无需登录，空配置返回内置默认 |
 | GET | `/api/settings/phone-countries` | 读取当前接码适配器的 `get_countries`；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key；返回 `{countries:[{code,name}]}`。Key 缺失或调用失败时返回空数组 |
 | GET | `/api/settings/phone-balance` | 查询接码平台余额；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key，返回 `{balance}`。无 Key 或平台不支持返回空字符串 |
 | GET | `/api/settings/page-countries` | 读取 OpenAI 页面国家映射；返回 `{countries:[{code,name,dial_code}]}`，`code` 是两位 ISO 国家编码，区别于接码平台国家 ID |

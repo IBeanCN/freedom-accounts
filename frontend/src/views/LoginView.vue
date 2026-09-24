@@ -1,8 +1,8 @@
 <template>
   <div class="auth-page">
     <form class="auth-card" @submit.prevent="submit">
-      <h1 class="auth-title">freedom-accounts</h1>
-      <p class="auth-sub">账号任务平台 · 管理员登录</p>
+      <h1 class="auth-title">{{ appStore.siteSettings.site_main_title }}</h1>
+      <p class="auth-sub">{{ appStore.siteSettings.site_subtitle }} · 管理员登录</p>
       <div>
         <el-form-item label="用户名">
           <el-input v-model="form.username" autocomplete="username" />
