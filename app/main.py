@@ -15,7 +15,7 @@ from .core import database, settings, maintenance, tasks
 from .automation import browser, fpcheck, scheduler, token_refresh
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+WEB_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 logging.basicConfig(
     level=logging.DEBUG,

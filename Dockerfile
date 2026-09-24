@@ -1,4 +1,12 @@
-# 应用镜像：包含 FastAPI 后端、静态前端和 Playwright 降级引擎。
+# 应用镜像：先构建 Vue 前端，再包含 FastAPI 后端和 Playwright 降级引擎。
+FROM node:22-alpine AS frontend-build
+
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ .
+RUN npm run build
+
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -11,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install --with-deps chromium
 
 COPY . .
+COPY --from=frontend-build /src/dist frontend/dist
 
 # 提前创建运行时目录，避免容器以只读项目目录启动时失败。
 RUN mkdir -p data logs browser_profiles

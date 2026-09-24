@@ -10,3 +10,5 @@ logs/
 .idea/
 .env.backup.*
 data.backup.*/
+frontend/node_modules/
+frontend/dist/

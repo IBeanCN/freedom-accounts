@@ -29,6 +29,7 @@ cd freedom-accounts
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium   # 降级引擎需要；cloakbrowser 会自带二进制
+(cd frontend && npm ci && npm run build)
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -93,9 +94,11 @@ app/
   routers/    auth / groups / accounts / system(tasks+settings)
   automation/ fingerprint(指纹生成与参数映射) / browser(引擎启动与降级)
               flows(流程适配器，可按 group_type 插件化) / scheduler(并发调度)
-web/          单页前端（原生 JS，无构建步骤）
+frontend/    Vue 3 + Element Plus 前端（Vite 页面级拆分）
 data/         platform.db 与浏览器 profile
 ```
+
+前端构建产物输出到 `frontend/dist`，由 FastAPI 在 `/` 与 `/static` 下服务。
 
 ## 自定义登录流程
 
