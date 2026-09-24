@@ -7,6 +7,7 @@ import { ElConfigProvider } from 'element-plus/es/components/config-provider/ind
 import { ElDialog } from 'element-plus/es/components/dialog/index'
 import { ElDivider } from 'element-plus/es/components/divider/index'
 import { ElDrawer } from 'element-plus/es/components/drawer/index'
+import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus/es/components/dropdown/index'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index'
 import { ElIcon } from 'element-plus/es/components/icon/index'
 import { ElInput } from 'element-plus/es/components/input/index'
@@ -40,6 +41,9 @@ const elementComponents = [
   ElDialog,
   ElDivider,
   ElDrawer,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElForm,
   ElFormItem,
   ElIcon,

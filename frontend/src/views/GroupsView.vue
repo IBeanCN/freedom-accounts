@@ -109,7 +109,7 @@
         @selection-change="onSelectionChange"
       >
         <el-table-column type="selection" width="44" fixed="left" />
-        <el-table-column label="账号 / 上游信息" width="260" fixed="left" prop="username" sortable :sort-method="sortByAccount">
+        <el-table-column label="账号 / 上游信息" min-width="200" fixed="left" prop="username" sortable :sort-method="sortByAccount">
           <template #default="{ row }">
             <div class="cell-stack">
               <el-tooltip :content="row.username" :disabled="!row.username" placement="top">
@@ -126,7 +126,7 @@
             <el-tag :type="remoteStatusType(row.remote_status)" effect="plain">{{ row.remote_status || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="指纹 / 检测" width="230" sortable :sort-method="sortByFingerprint">
+        <el-table-column label="指纹 / 检测" min-width="300" sortable :sort-method="sortByFingerprint">
           <template #default="{ row }">
             <div class="fingerprint-cell">
               <div class="fingerprint-main">
@@ -168,27 +168,63 @@
             <span class="ellipsis-cell">{{ fmtTime(row.last_run_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="320" fixed="right">
+        <el-table-column label="操作" width="116" fixed="right" class-name="account-actions-column">
           <template #default="{ row }">
             <div class="account-actions">
               <template v-if="row.enabled">
-                <el-button link size="small" type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
-                <el-button link size="small" :disabled="busy(row)" @click="regenerate(row)">换指纹</el-button>
-                <el-button link size="small" :disabled="busy(row)" @click="refresh(row)">{{ tokenLabel(row) }}</el-button>
-                <el-button
-                  v-if="isChecking(row)"
-                  link
-                  size="small"
-                  :disabled="appStore.fpStopPending.has(`a${row.id}`)"
-                  @click="appStore.stopAccountFingerprintCheck(row)"
-                >{{ appStore.fpStopPending.has(`a${row.id}`) ? '停止中…' : '停止检测' }}</el-button>
-                <el-button v-else link size="small" :disabled="busy(row)" @click="check(row)">指纹检测</el-button>
-                <el-button v-if="loginBusy(row)" link size="small" type="warning" @click="stop(row)">停止</el-button>
+                <el-tooltip v-if="loginBusy(row)" content="停止任务" placement="top">
+                  <button class="quiet-stop" type="button" aria-label="停止任务" @click="stop(row)">
+                    <el-icon size="14"><VideoPause /></el-icon>
+                  </button>
+                </el-tooltip>
+                <el-tooltip v-else-if="isChecking(row)" content="停止指纹检测" placement="top">
+                  <button
+                    class="quiet-stop"
+                    type="button"
+                    aria-label="停止指纹检测"
+                    :disabled="appStore.fpStopPending.has(`a${row.id}`)"
+                    @click="appStore.stopAccountFingerprintCheck(row)"
+                  >
+                    <el-icon size="14"><VideoPause /></el-icon>
+                  </button>
+                </el-tooltip>
+                <el-button v-else link size="small" type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
+
                 <el-button link size="small" @click="showLogs(row)">日志</el-button>
+                <el-dropdown
+                  class="row-more"
+                  trigger="click"
+                  placement="bottom-end"
+                  @command="(command) => accountMenuCommand(command, row)"
+                >
+                  <button class="action-icon" type="button" title="更多操作" aria-label="更多操作">
+                    <el-icon size="14"><MoreFilled /></el-icon>
+                  </button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="regenerate" :disabled="busy(row)">换指纹</el-dropdown-item>
+                      <el-dropdown-item
+                        v-if="isChecking(row)"
+                        command="stop-fingerprint"
+                        :disabled="appStore.fpStopPending.has(`a${row.id}`)"
+                      >停止检测</el-dropdown-item>
+                      <el-dropdown-item
+                        v-else
+                        command="check"
+                        :disabled="busy(row)"
+                      >指纹检测</el-dropdown-item>
+                      <el-dropdown-item command="refresh-token" :disabled="busy(row)">{{ tokenLabel(row) }}</el-dropdown-item>
+                      <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                      <el-dropdown-item command="remove" class="row-menu-danger" :disabled="busy(row)">删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </template>
-              <el-tag v-else type="warning">已停用</el-tag>
-              <el-button link size="small" @click="openAccount(row)">编辑</el-button>
-              <el-button link size="small" type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+              <template v-else>
+                <el-tag type="warning">已停用</el-tag>
+                <el-button link size="small" @click="openAccount(row)">编辑</el-button>
+                <el-button link size="small" type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+              </template>
             </div>
           </template>
         </el-table-column>
@@ -221,7 +257,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
-import { ArrowDown, ArrowUp, Plus } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, MoreFilled, Plus, VideoPause } from '@element-plus/icons-vue'
 import GroupFormDialog from '@/dialogs/GroupFormDialog.vue'
 import AccountFormDialog from '@/dialogs/AccountFormDialog.vue'
 import BatchFingerprintDialog from '@/dialogs/BatchFingerprintDialog.vue'
@@ -533,6 +569,15 @@ async function remove(account) {
   await appStore.deleteAccount(account)
 }
 
+function accountMenuCommand(command, account) {
+  if (command === 'regenerate') return regenerate(account)
+  if (command === 'check') return check(account)
+  if (command === 'stop-fingerprint') return appStore.stopAccountFingerprintCheck(account)
+  if (command === 'refresh-token') return refresh(account)
+  if (command === 'edit') return openAccount(account)
+  if (command === 'remove') return remove(account)
+}
+
 async function refreshTokens() {
   if (!selectedRows.value.length && !appStore.accounts.length) {
     ElMessage.error('该分组暂无账号')
@@ -602,20 +647,71 @@ async function changeAccountTasksPage(page) {
 
 <style scoped>
 .account-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px 8px;
+  --row-control-duration: 150ms;
+  --row-control-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
   align-items: center;
-  justify-items: start;
-}
-
-.account-actions :deep(.el-button + .el-button) {
-  margin-left: 0;
-}
-
-.account-actions :deep(.el-button),
-.account-actions :deep(.el-tag) {
-  justify-self: start;
+  gap: 6px;
   min-width: 0;
+}
+
+:deep(.account-actions-column .cell) {
+  padding-right: 4px;
+  padding-left: 4px;
+}
+
+.quiet-stop,
+.action-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fa-muted);
+  cursor: pointer;
+  transition: color var(--row-control-duration) var(--row-control-ease),
+    background-color var(--row-control-duration) var(--row-control-ease),
+    border-color var(--row-control-duration) var(--row-control-ease);
+}
+
+.quiet-stop {
+  color: var(--el-color-warning);
+}
+
+.quiet-stop:hover:not(:disabled),
+.quiet-stop:focus-visible {
+  border-color: var(--el-color-warning-light-5);
+  background: var(--el-color-warning-light-9);
+}
+
+.quiet-stop:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.action-icon:hover,
+.action-icon:focus-visible {
+  border-color: var(--fa-line);
+  background: var(--fa-brand-soft);
+  color: var(--fa-brand);
+}
+
+.quiet-stop:focus-visible,
+.action-icon:focus-visible {
+  outline: 2px solid var(--fa-brand);
+  outline-offset: 1px;
+}
+
+:global(.row-menu-danger) {
+  color: var(--el-color-danger);
+}
+
+:global(.row-menu-danger:not(.disabled)):hover,
+:global(.row-menu-danger:not(.disabled)):focus {
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 </style>
