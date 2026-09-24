@@ -8,7 +8,7 @@ Design:
   - a group-level asyncio.Semaphore(group.concurrency) bounds simultaneous
     browser runs; queued tasks wait on the semaphore;
   - each run: create task row -> launch browser -> run login flow -> persist
-    result. Upstream integration is adapter-internal and log-only now.
+    result. Upstream integration is internal to the selected flow adapter.
 """
 import asyncio
 import json
@@ -47,6 +47,71 @@ RUN_COOLDOWN_MAX_SECONDS = 30.0
 
 class RunStopped(Exception):
     """Internal signal: a cancelled login run has been persisted and cleaned up."""
+
+
+class TaskStepLog(list):
+    """A step list whose appends are mirrored into ``tasks.steps`` immediately.
+
+    Flow helpers receive a plain mutable list and call ``append`` synchronously.
+    A single writer task serializes those appends onto the task's SQLite row,
+    so any process can read the current step without a whole-run snapshot.
+    """
+
+    def __init__(self, db=None, task_id: int | None = None) -> None:
+        super().__init__()
+        self._db = db
+        self._task_id = task_id
+        self._dirty = asyncio.Event()
+        self._writer: asyncio.Task | None = None
+        self._closed = False
+
+    def bind(self, db, task_id: int) -> None:
+        self._db = db
+        self._task_id = task_id
+        self._mark_dirty()
+
+    def append(self, value) -> None:
+        super().append(value)
+        self._mark_dirty()
+
+    def _mark_dirty(self) -> None:
+        if self._closed or self._db is None or self._task_id is None:
+            return
+        if self._writer is None or self._writer.done():
+            self._writer = asyncio.create_task(self._write_loop())
+        self._dirty.set()
+
+    async def _write(self) -> None:
+        await self._db.execute(
+            "UPDATE tasks SET steps=? WHERE id=?",
+            (json.dumps(self, ensure_ascii=False), self._task_id))
+        await self._db.commit()
+
+    async def _write_loop(self) -> None:
+        try:
+            while True:
+                await self._dirty.wait()
+                self._dirty.clear()
+                await self._write()
+                if not self._dirty.is_set():
+                    return
+        finally:
+            if self._writer is asyncio.current_task():
+                self._writer = None
+
+    async def flush(self) -> None:
+        """Wait until every append made so far is visible in ``tasks.steps``."""
+        if self._closed or self._db is None or self._task_id is None:
+            return
+        self._dirty.set()
+        if self._writer is not None:
+            await self._writer
+        else:
+            await self._write()
+
+    async def close(self) -> None:
+        await self.flush()
+        self._closed = True
 
 
 def _now() -> str:
@@ -284,7 +349,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     group_id, account_id = g["id"], a["id"]
     task_id = None
     started_at = _now()
-    steps: list = []
+    steps = TaskStepLog()
     status, error, result_json, fp_json, mode = "failed", "", {}, "{}", ""
     engine_used = browser_mod.engine_name()
     closer = None
@@ -294,6 +359,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             (group_id, account_id, _now()))
         task_id = cur.lastrowid
         started_at = _now()
+        steps.bind(db, task_id)
         steps.append({"t": _now(), "step": "task_created", "detail": f"task#{task_id}", "ok": True})
         await db.execute(
             "UPDATE accounts SET last_status='running', last_task_id=?, last_run_at=? WHERE id=?",
@@ -389,11 +455,11 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     finally:
         _stop_requests.discard(account_id)
     steps.append({"t": _now(), "step": "finished", "detail": status, "ok": status == "success"})
+    # Keep the final status/steps update ordered after all incremental writes.
+    await steps.flush()
 
-    # NOTE: upstream callbacks used to be posted here via groups.callback_url.
-    # That field is retired — upstream integration (auth links, token redeem,
-    # refresh...) now lives inside the flow adapters and is log-only
-    # (see flows/adapters/base.py & adapter_logs).
+    # Upstream integration (auth links, token redeem, refresh...) now lives
+    # inside the flow adapters; calls are audited in adapter_logs.
     callback_status, callback_response = "skipped", ""
 
     await db.execute(
@@ -409,6 +475,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     await db.execute("UPDATE accounts SET last_status=?, last_message=? WHERE id=?",
                      (status, str(msg)[:300], account_id))
     await db.commit()
+    await steps.close()
 
 
 async def shutdown() -> None:

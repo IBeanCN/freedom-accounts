@@ -8,11 +8,11 @@
           <el-form-item label="账号" required>
             <el-input v-model="form.username" />
           </el-form-item>
-          <el-form-item label="密码" required>
+          <el-form-item label="密码" :required="!editing">
             <el-input v-model="form.password" type="password" show-password placeholder="编辑时留空表示不修改" />
           </el-form-item>
           <el-form-item label="2FA 密钥（TOTP base32，可选）" class="full-width">
-            <el-input v-model="form.totp_secret" placeholder="JBSWY3DPEHPK3PXP" />
+            <el-input v-model="form.totp_secret" :placeholder="editing ? '留空表示不修改' : 'JBSWY3DPEHPK3PXP'" />
           </el-form-item>
         </div>
       </template>
@@ -41,10 +41,10 @@
         </el-button>
       </el-divider>
       <template v-if="showEnvironment">
-        <div class="form-grid">
-          <el-form-item label="浏览器模式">
-            <el-select v-model="form.browser_mode">
-              <el-option value="inherit" label="跟随分组 / 系统" />
+      <div class="form-grid form-grid--three">
+        <el-form-item label="浏览器模式">
+          <el-select v-model="form.browser_mode">
+            <el-option value="inherit" label="跟随分组 / 系统" />
               <el-option value="headless" label="无头" />
               <el-option value="headed" label="有头" />
             </el-select>
@@ -53,13 +53,16 @@
             <el-select v-model="form.phone_platform" filterable>
               <el-option value="inherit" label="跟随分组" />
               <el-option value="hero_sms" label="HeroSMS" />
-              <el-option v-if="legacyPhonePlatform" :value="form.phone_platform" :label="`${form.phone_platform}（存量）`" />
+            <el-option v-if="legacyPhonePlatform" :value="form.phone_platform" :label="`${form.phone_platform}（存量）`" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="关联代理">
+          <el-select v-model="form.proxy_id" filterable>
+            <el-option :value="INHERIT_PROXY" label="跟随分组代理" />
+            <el-option v-for="item in appStore.proxyOptions" :key="item.value" :value="item.value" :label="item.label" />
+              <el-option v-if="legacyProxy" :value="form.proxy_id" :label="`${form.proxy_id}（存量）`" />
             </el-select>
           </el-form-item>
-          <div class="el-form-item">
-            <label class="el-form-item__label">关联代理</label>
-            <div class="section-hint">{{ proxySummary }}</div>
-          </div>
         </div>
 
         <div class="head-inline page-panel">
@@ -106,9 +109,10 @@ const showEnvironment = ref(false)
 const saving = ref(false)
 const fpBase = ref({})
 const form = reactive(createForm(null))
+const INHERIT_PROXY = 'inherit'
 
-const proxy = computed(() => appStore.proxies.find((item) => item.id === props.editing?.proxy_id))
-const proxySummary = computed(() => proxy.value ? `账号代理：${proxy.value.name}` : '跟随分组代理')
+const legacyProxy = computed(() => Boolean(props.editing?.proxy_id)
+  && !appStore.proxies.some((item) => item.id === props.editing.proxy_id))
 const legacyPhonePlatform = computed(() => Boolean(props.editing?.phone_platform)
   && !['inherit', 'hero_sms'].includes(props.editing.phone_platform))
 
@@ -122,6 +126,7 @@ function createForm(account) {
     enabled: account ? Boolean(account.enabled) : true,
     browser_mode: account?.browser_mode || 'inherit',
     phone_platform: account?.phone_platform || 'inherit',
+    proxy_id: account?.proxy_id || INHERIT_PROXY,
     fingerprint: { ...(account?.fingerprint || {}) },
   }
 }
@@ -143,7 +148,9 @@ function geoHasData(geo) {
 }
 
 async function fillGeo() {
-  let geo = proxy.value
+  let geo = form.proxy_id !== INHERIT_PROXY
+    ? appStore.proxies.find((item) => String(item.id) === String(form.proxy_id)) || null
+    : null
   if (!geoHasData(geo)) {
     const group = appStore.groups.find((item) => String(item.id) === String(props.editing?.group_id || appStore.currentGroup))
     geo = group || geo
@@ -200,7 +207,7 @@ async function submit() {
     fingerprint: fingerprintBody(),
     enabled: form.enabled,
     remark: form.remark.trim(),
-    proxy_id: props.editing?.proxy_id || null,
+    proxy_id: form.proxy_id !== INHERIT_PROXY ? Number(form.proxy_id) : null,
   }
   saving.value = true
   try {
@@ -236,8 +243,8 @@ async function submit() {
     const body = {
       ...shared,
       username: props.editing ? form.username.trim() : trimAccountTail(form.username),
-      password: form.password || (props.editing ? '__KEEP_OLD__' : ''),
-      totp_secret: props.editing ? (form.totp_secret.trim() || '__CLEAR__') : trimTotpTail(form.totp_secret),
+      password: form.password,
+      totp_secret: trimTotpTail(form.totp_secret),
     }
     if (!body.password) throw new Error('密码不能为空')
     if (props.editing) {

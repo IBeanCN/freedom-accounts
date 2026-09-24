@@ -14,7 +14,7 @@ Contract:
     They are invoked by internal services; refresh_token is additionally
     triggered by the account UI API.
   - Every call MUST append one row to the `adapter_logs` table via
-    `alog.log_action` — logging is the only observable output.
+    `alog.log_action` for auditing.
   - `group` carries the group row: `id`, `login_url` (= upstream base URL),
     `upstream_key` (= upstream auth key).
 """
@@ -43,7 +43,7 @@ class FlowAdapter:
     run_sync: Callable = None
     run_async: Callable = None
 
-    # ---- optional credential operations (log-only, no API surface) ----------
+    # ---- optional internal credential operations ----------------------------
     async def list_accounts(self, group: dict) -> dict:
         """List upstream accounts visible to this group's credential.
 

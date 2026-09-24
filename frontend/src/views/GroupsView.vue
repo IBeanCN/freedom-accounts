@@ -38,31 +38,34 @@
           <el-button text :icon="appStore.expandedGroups.has(String(group.id)) ? ArrowUp : ArrowDown" @click.stop="appStore.toggleGroupExpanded(group.id)" />
         </div>
         <div class="group-actions" @click.stop>
-          <el-button size="small" type="primary" @click="groupAction(group, 'start')">一键执行</el-button>
+          <el-button text size="small" type="primary" @click="groupAction(group, 'start')">执行</el-button>
           <template v-if="appStore.localEngine">
             <el-button
+              text
               v-if="group.browser_open"
               size="small"
               @click="groupAction(group, 'close-browser')"
-            >关闭浏览器</el-button>
+            >关浏览器</el-button>
             <el-button
+              text
               v-else
               size="small"
               @click="groupAction(group, 'open-browser')"
-            >打开浏览器</el-button>
+            >开浏览器</el-button>
           </template>
-          <el-button size="small" @click="groupAction(group, 'sync')">同步账号</el-button>
+          <el-button text size="small" @click="groupAction(group, 'sync-accounts')">同步</el-button>
           <el-button
+            text
             v-if="isGroupChecking(group)"
             size="small"
             :disabled="appStore.fpStopPending.has(`g${group.id}`)"
             @click="appStore.stopGroupFingerprintCheck(group)"
           >
-            {{ appStore.fpStopPending.has(`g${group.id}`) ? '停止中…' : '停止检测' }}
+            {{ appStore.fpStopPending.has(`g${group.id}`) ? '停止中…' : '停止' }}
           </el-button>
-          <el-button v-else size="small" @click="appStore.startGroupFingerprintCheck(group)">指纹检测</el-button>
-          <el-button size="small" @click="openGroup(group)">编辑</el-button>
-          <el-button size="small" type="danger" plain @click="removeGroup(group)">删除</el-button>
+          <el-button v-else text size="small" @click="appStore.startGroupFingerprintCheck(group)">检测</el-button>
+          <el-button text size="small" @click="openGroup(group)">编辑</el-button>
+          <el-button text size="small" type="danger" @click="removeGroup(group)">删除</el-button>
         </div>
       </div>
     </div>
@@ -102,71 +105,87 @@
         @select-all="appStore.toggleAllAccounts"
         @selection-change="onSelectionChange"
       >
-        <el-table-column type="selection" width="44" />
-        <el-table-column label="账号 / 上游信息" min-width="220">
+        <el-table-column type="selection" width="44" fixed="left" />
+        <el-table-column label="账号 / 上游信息" width="260" fixed="left" prop="username" sortable :sort-method="sortByAccount">
           <template #default="{ row }">
             <div class="cell-stack">
-              <span>{{ row.username }}</span>
-              <span class="cell-sub">{{ row.remote_id ? `ID ${row.remote_id} · ` : '' }}{{ row.remote_remark || '无备注' }}</span>
+              <el-tooltip :content="row.username" :disabled="!row.username" placement="top">
+                <span class="ellipsis-cell">{{ row.username }}</span>
+              </el-tooltip>
+              <el-tooltip :content="upstreamInfo(row)" placement="top">
+                <span class="ellipsis-cell cell-sub">{{ upstreamInfo(row) }}</span>
+              </el-tooltip>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="上游状态" width="110">
+        <el-table-column label="上游状态" width="110" prop="remote_status" sortable :sort-method="sortByRemoteStatus">
           <template #default="{ row }">
             <el-tag :type="remoteStatusType(row.remote_status)" effect="plain">{{ row.remote_status || '—' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="浏览器指纹" min-width="220">
-          <template #default="{ row }"><span class="mono">{{ fingerprintSummary(row.fingerprint) }}</span></template>
-        </el-table-column>
-        <el-table-column label="检测结果" width="110">
+        <el-table-column label="指纹 / 检测" width="230" sortable :sort-method="sortByFingerprint">
           <template #default="{ row }">
-            <el-tooltip :content="badge(row).tip || badge(row).label">
-              <el-tag :type="badge(row).type === 'primary' ? 'info' : badge(row).type">{{ badge(row).label }}</el-tag>
-            </el-tooltip>
+            <div class="fingerprint-cell">
+              <el-tooltip :content="badge(row).tip || badge(row).label" placement="top">
+                <el-tag size="small" :type="badge(row).type === 'primary' ? 'info' : badge(row).type">{{ badge(row).label }}</el-tag>
+              </el-tooltip>
+              <el-tooltip :content="fingerprintSummary(row.fingerprint)" :disabled="!row.fingerprint?.seed" placement="top">
+                <div class="fingerprint-lines">
+                  <span class="ellipsis-cell mono">{{ fingerprintMeta(row.fingerprint).seed }}</span>
+                  <span class="ellipsis-cell cell-sub">{{ fingerprintMeta(row.fingerprint).meta }}</span>
+                </div>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="浏览器" width="100">
-          <template #default="{ row }">{{ modeText(row.browser_mode) }}</template>
-        </el-table-column>
-        <el-table-column label="代理" width="130">
+        <el-table-column label="浏览器 / 代理" width="130" sortable :sort-method="sortByBrowserProxy">
           <template #default="{ row }">
-            <el-tag :type="row.proxy_name ? 'info' : 'info'" effect="plain">{{ row.proxy_name ? `代理 ${row.proxy_name}` : '直连' }}</el-tag>
+            <div class="cell-stack">
+              <el-tooltip :content="modeText(row.browser_mode)" placement="top">
+                <span class="ellipsis-cell">{{ modeText(row.browser_mode) }}</span>
+              </el-tooltip>
+              <el-tooltip :content="proxyText(row)" placement="top">
+                <span class="ellipsis-cell cell-sub">{{ proxyText(row) }}</span>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="启用" width="80">
+        <el-table-column label="启用" width="80" sortable :sort-method="sortByEnabled">
           <template #default="{ row }">
             <el-switch :model-value="Boolean(row.enabled)" @change="toggleEnabled(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="最新状态" width="160">
+        <el-table-column label="最新状态" width="160" sortable :sort-method="sortByLatestStatus">
           <template #default="{ row }">
             <el-tag :type="statusMeta(row.last_status).type">{{ statusMeta(row.last_status).label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近运行" width="130">
-          <template #default="{ row }">{{ fmtTime(row.last_run_at) }}</template>
+        <el-table-column label="最近运行" width="170" prop="last_run_at" sortable :sort-method="sortByLastRun">
+          <template #default="{ row }">
+            <span class="ellipsis-cell">{{ fmtTime(row.last_run_at) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <div class="account-actions">
               <template v-if="row.enabled">
-                <el-button link type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
-                <el-button link :disabled="busy(row)" @click="regenerate(row)">换指纹</el-button>
-                <el-button link :disabled="busy(row)" @click="refresh(row)">{{ tokenLabel(row) }}</el-button>
+                <el-button link size="small" type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
+                <el-button link size="small" :disabled="busy(row)" @click="regenerate(row)">换指纹</el-button>
+                <el-button link size="small" :disabled="busy(row)" @click="refresh(row)">{{ tokenLabel(row) }}</el-button>
                 <el-button
                   v-if="isChecking(row)"
                   link
+                  size="small"
                   :disabled="appStore.fpStopPending.has(`a${row.id}`)"
                   @click="appStore.stopAccountFingerprintCheck(row)"
                 >{{ appStore.fpStopPending.has(`a${row.id}`) ? '停止中…' : '停止检测' }}</el-button>
-                <el-button v-else link :disabled="busy(row)" @click="check(row)">指纹检测</el-button>
-                <el-button v-if="loginBusy(row)" link type="warning" @click="stop(row)">停止</el-button>
-                <el-button link @click="showLogs(row)">日志</el-button>
+                <el-button v-else link size="small" :disabled="busy(row)" @click="check(row)">指纹检测</el-button>
+                <el-button v-if="loginBusy(row)" link size="small" type="warning" @click="stop(row)">停止</el-button>
+                <el-button link size="small" @click="showLogs(row)">日志</el-button>
               </template>
               <el-tag v-else type="warning">已停用</el-tag>
-              <el-button link @click="openAccount(row)">编辑</el-button>
-              <el-button link type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+              <el-button link size="small" @click="openAccount(row)">编辑</el-button>
+              <el-button link size="small" type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
             </div>
           </template>
         </el-table-column>
@@ -262,7 +281,7 @@ function riskColor(group) {
 
 async function groupAction(group, action) {
   try {
-    if (action === 'sync') {
+    if (action === 'sync-accounts') {
       await ElMessageBox.confirm(
         '将按上游账号 ID 比对：ID 已存在则仅更新上游信息（密码/2FA/指纹等本地配置不动），上游已移除的删除，新增的落库；与上游账号重复的其他账号将被停用。',
         `同步账号 · ${group.name}`,
@@ -319,6 +338,69 @@ function fingerprintSummary(fingerprint) {
   if (!fingerprint?.seed) return '未配置'
   const screen = fingerprint.screen_width && fingerprint.screen_height ? `${fingerprint.screen_width}×${fingerprint.screen_height}` : '—'
   return `#${fingerprint.seed} · ${fingerprint.platform || '—'} · ${screen} · ${fingerprint.timezone || '—'}`
+}
+
+function fingerprintMeta(fingerprint) {
+  if (!fingerprint?.seed) return { seed: '未配置', meta: '运行或换指纹时生成' }
+  const screen = fingerprint.screen_width && fingerprint.screen_height ? `${fingerprint.screen_width}×${fingerprint.screen_height}` : '—'
+  return {
+    seed: `#${fingerprint.seed}`,
+    meta: [fingerprint.platform || '—', screen, fingerprint.timezone || '—'].filter(Boolean).join(' · '),
+  }
+}
+
+function upstreamInfo(account) {
+  const parts = []
+  if (account.remote_id) parts.push(`ID ${account.remote_id}`)
+  if (account.remote_remark) parts.push(account.remote_remark)
+  return parts.join(' · ') || '无上游信息'
+}
+
+function compareSortValues(a, b) {
+  if (a == null && b == null) return 0
+  if (a == null) return -1
+  if (b == null) return 1
+  return String(a).localeCompare(String(b), 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function sortByAccount(a, b) {
+  return compareSortValues(a.username, b.username)
+    || compareSortValues(upstreamInfo(a), upstreamInfo(b))
+}
+
+function sortByRemoteStatus(a, b) {
+  return compareSortValues(a.remote_status, b.remote_status)
+    || compareSortValues(a.username, b.username)
+}
+
+function sortByFingerprint(a, b) {
+  return compareSortValues(badge(a).label, badge(b).label)
+    || compareSortValues(a.fingerprint?.seed, b.fingerprint?.seed)
+}
+
+function sortByBrowserProxy(a, b) {
+  return compareSortValues(modeText(a.browser_mode), modeText(b.browser_mode))
+    || compareSortValues(proxyText(a), proxyText(b))
+}
+
+function sortByEnabled(a, b) {
+  return compareSortValues(Number(Boolean(b.enabled)), Number(Boolean(a.enabled)))
+    || compareSortValues(a.username, b.username)
+}
+
+function sortByLatestStatus(a, b) {
+  return compareSortValues(statusMeta(a.last_status).label, statusMeta(b.last_status).label)
+    || compareSortValues(a.username, b.username)
+}
+
+function sortByLastRun(a, b) {
+  return compareSortValues(a.last_run_at, b.last_run_at)
+    || compareSortValues(a.username, b.username)
+}
+
+function proxyText(account) {
+  if (account.proxy_id) return `代理 ${account.proxy_name}`
+  return account.group_proxy_id ? '跟随分组代理' : '直连'
 }
 
 function badge(account) {
@@ -494,11 +576,5 @@ async function showLogs(account) {
 .account-actions :deep(.el-tag) {
   justify-self: start;
   min-width: 0;
-}
-
-.account-actions :deep(.el-button) {
-  height: 24px;
-  padding: 0;
-  font-size: 12px;
 }
 </style>

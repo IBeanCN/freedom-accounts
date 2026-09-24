@@ -15,7 +15,7 @@
     error / data.error / success===false
   - 上游账号按 email 与本地账号 username 匹配（remote_id 缺失时兜底）
 
-凭证操作（log-only）: list_accounts / get_account / auth_link / redeem_token
+凭证操作: list_accounts / get_account / auth_link / redeem_token
 已实现；refresh_token 未实现（上游未见对应端点）。
 
 同步版 run_sync 不支持: OAuth 流程依赖原生 async 引擎（scheduler 全为 async）。
@@ -236,7 +236,7 @@ class Sub2ApiAdapter(FlowAdapter):
     run_sync = staticmethod(run_sub2api_sync)
     run_async = staticmethod(run_sub2api_async)
 
-    # ---- credential operations (log-only, never exposed on the web) ----
+    # ---- internal credential operations ----
 
     async def list_accounts(self, group: dict) -> dict:
         try:
@@ -304,7 +304,7 @@ class Sub2ApiAdapter(FlowAdapter):
                            remote_account_id: str | None = None) -> dict:
         """兑换凭证：flow_id = generate-auth-url 的 session_id；
         callback_url = 浏览器段拿到的 localhost 回调地址。
-        exchange 成功后 best-effort 恢复账号状态与调度（失败仅记日志，不影响授权结果）。"""
+        exchange 成功后 best-effort 恢复账号状态与调度（恢复失败不影响授权结果）。"""
         try:
             code, state = parse_callback(callback_url)
             api, key = _api_base(group.get("login_url") or ""), _api_key(group)

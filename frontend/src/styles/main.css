@@ -64,14 +64,16 @@ body {
 
 .shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .side-rail {
   display: flex;
   flex-direction: column;
   flex: 0 0 248px;
+  height: 100%;
   padding: 18px 14px;
+  min-height: 0;
   border-right: 1px solid var(--fa-line);
   background: var(--fa-surface);
 }
@@ -162,7 +164,10 @@ body {
 
 .main {
   flex: 1;
+  height: 100%;
   min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .topbar {
@@ -211,13 +216,13 @@ body {
 
 .group-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
   margin-bottom: 20px;
 }
 
 .group-card {
-  padding: 14px;
+  padding: 10px;
   cursor: pointer;
   border: 1px solid var(--fa-line);
   border-radius: 8px;
@@ -232,7 +237,7 @@ body {
 
 .group-head {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
 }
 
@@ -277,13 +282,23 @@ body {
 
 .group-actions {
   display: none;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
-  margin-top: 12px;
+  margin-top: 10px;
+  overflow: hidden;
 }
 
 .group-card.is-open .group-actions {
   display: flex;
+}
+
+.group-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.group-actions .el-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .risk-dot {
@@ -300,6 +315,26 @@ body {
 
 .cell-sub {
   font-size: 12px;
+}
+
+.ellipsis-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fingerprint-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.fingerprint-lines {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .mono {
@@ -337,10 +372,119 @@ body {
   margin-bottom: 24px;
 }
 
+.settings-tabs .el-tabs__header {
+  margin-bottom: 16px;
+  padding: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fa-muted) 12%, transparent);
+}
+
+.settings-tabs .el-tabs__nav-wrap::after,
+.settings-tabs .el-tabs__active-bar {
+  display: none;
+}
+
+.settings-tabs .el-tabs__nav {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+  border-bottom: 0;
+}
+
+.settings-tabs .el-tabs__item {
+  flex: 1;
+  height: 36px;
+  padding: 0 18px;
+  line-height: 36px;
+  color: var(--fa-muted);
+  text-align: center;
+  border-radius: 999px;
+  transition: color .15s, background-color .15s;
+}
+
+.settings-tabs .el-tabs__item:hover {
+  color: var(--fa-ink);
+}
+
+.settings-tabs .el-tabs__item.is-active {
+  color: var(--fa-ink);
+  font-weight: 600;
+  background: var(--fa-surface);
+}
+
+.settings-tab-hint {
+  margin: 0 0 16px;
+  color: var(--fa-muted);
+  font-size: 12px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 14px;
+}
+
+.form-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.phone-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.phone-balance-text {
+  color: var(--fa-muted);
+  font-size: 13px;
+}
+
+.phone-balance-text.is-ok {
+  color: var(--el-color-success);
+}
+
+.phone-balance-text.is-error {
+  color: var(--el-color-danger);
+}
+
+.phone-balance-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.phone-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
+  max-width: 1080px;
+}
+
+.phone-form-grid .el-form-item {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.phone-form-grid .el-form-item__label {
+  display: flex;
+  height: auto;
+  justify-content: flex-start;
+  margin-bottom: 6px;
+  padding: 0;
+  line-height: 20px;
+}
+
+.phone-form-grid .el-form-item__content {
+  display: block;
+  line-height: normal;
+}
+
+.phone-error {
+  margin: 0;
+  color: var(--el-color-danger);
+  font-size: 12px;
 }
 
 .dialog-form {
@@ -437,12 +581,19 @@ body {
 @media (max-width: 820px) {
   .shell {
     display: block;
+    height: auto;
   }
 
   .side-rail {
     flex: none;
+    height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--fa-line);
+  }
+
+  .main {
+    height: auto;
+    overflow: visible;
   }
 
   .rail-nav {
@@ -452,7 +603,9 @@ body {
   .group-grid,
   .metrics,
   .settings-grid,
-  .form-grid {
+  .form-grid,
+  .form-grid--three,
+  .phone-form-grid {
     grid-template-columns: 1fr;
   }
 

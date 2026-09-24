@@ -24,7 +24,6 @@ PLATFORMS: list[PlatformSpec] = [
     PlatformSpec(
         key="OpenAI-openai",
         label="OpenAI",
-        description="OpenAI / ChatGPT 账号池",
         default_login_type="sub2api",
         login_url_hint="https://auth.openai.com/或 sub2api 站点地址",
     ),

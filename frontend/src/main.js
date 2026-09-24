@@ -15,6 +15,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index'
 import { ElRadioButton, ElRadioGroup } from 'element-plus/es/components/radio/index'
 import { ElSegmented } from 'element-plus/es/components/segmented/index'
 import { ElSwitch } from 'element-plus/es/components/switch/index'
+import { ElTabs, ElTabPane } from 'element-plus/es/components/tabs/index'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index'
 import { ElTag } from 'element-plus/es/components/tag/index'
 import { ElTooltip } from 'element-plus/es/components/tooltip/index'
@@ -47,6 +48,8 @@ const elementComponents = [
   ElSegmented,
   ElSelect,
   ElSwitch,
+  ElTabs,
+  ElTabPane,
   ElTable,
   ElTableColumn,
   ElTag,

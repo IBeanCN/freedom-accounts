@@ -44,3 +44,10 @@ async function submit() {
   }
 }
 </script>
+
+<style scoped>
+form.auth-card :deep(.el-form-item__label) {
+  flex: 0 0 64px;
+  justify-content: flex-start;
+}
+</style>

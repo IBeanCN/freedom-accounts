@@ -20,11 +20,12 @@
         </el-form-item>
         <el-form-item label="任务地址" required>
           <el-input v-model="form.login_url" :placeholder="urlHint" />
-          <div class="section-hint">{{ platformHint }}</div>
         </el-form-item>
         <el-form-item label="任务 Key（上游鉴权，可选）" class="full-width">
           <el-input v-model="form.upstream_key" placeholder="适配器请求上游时自动携带" />
         </el-form-item>
+      </div>
+      <div class="form-grid form-grid--three">
         <el-form-item label="并发数量">
           <el-input-number v-model="form.concurrency" :min="1" :controls="false" class="full-width" />
         </el-form-item>
@@ -34,6 +35,8 @@
         <el-form-item label="间隔上限 (ms)">
           <el-input-number v-model="form.interval_max_ms" :min="0" :controls="false" class="full-width" />
         </el-form-item>
+      </div>
+      <div class="form-grid">
         <el-form-item label="浏览器模式">
           <el-select v-model="form.browser_mode">
             <el-option value="inherit" label="跟随系统" />
@@ -41,18 +44,20 @@
             <el-option value="headed" label="有头" />
           </el-select>
         </el-form-item>
-        <el-form-item label="关联代理（分组默认，账号可覆盖）">
-          <el-select v-model="form.proxy_id" clearable filterable>
-            <el-option value="" label="不使用代理（直连）" />
-            <el-option v-for="item in appStore.proxyOptions" :key="item.value" :value="item.value" :label="item.label" />
-            <el-option v-if="legacyProxy" :value="form.proxy_id" :label="`${form.proxy_id}（存量）`" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="接码平台（账号可覆盖）">
           <el-select v-model="form.phone_platform" filterable>
             <el-option value="" label="跟随系统" />
             <el-option value="hero_sms" label="HeroSMS" />
             <el-option v-if="legacyPhonePlatform" :value="form.phone_platform" :label="`${form.phone_platform}（存量）`" />
+          </el-select>
+        </el-form-item>
+      </div>
+      <div class="form-grid">
+        <el-form-item label="关联代理（分组默认，账号可覆盖）">
+          <el-select v-model="form.proxy_id" clearable filterable>
+            <el-option value="" label="不使用代理（直连）" />
+            <el-option v-for="item in appStore.proxyOptions" :key="item.value" :value="item.value" :label="item.label" />
+            <el-option v-if="legacyProxy" :value="form.proxy_id" :label="`${form.proxy_id}（存量）`" />
           </el-select>
         </el-form-item>
         <el-form-item label="指纹检测站点（可选，覆盖系统设置）">
@@ -108,7 +113,6 @@ const legacyPhonePlatform = computed(() => Boolean(props.editing?.phone_platform
 const platformMeta = computed(() => appStore.meta.group_types.find((item) => item.key === form.group_type))
 const adapterMeta = computed(() => appStore.meta.login_types.find((item) => item.key === form.login_type))
 const urlHint = computed(() => platformMeta.value?.login_url_hint || 'https://...')
-const platformHint = computed(() => platformMeta.value?.description || '')
 const adapterHint = computed(() => adapterMeta.value?.description || '')
 
 function createForm(group) {

@@ -41,7 +41,7 @@ def _has_valid_totp(encrypted_secret: str) -> bool:
 class AccountBody(BaseModel):
     group_id: int
     username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    password: str = ""
     totp_secret: str = ""
     browser_mode: str = Field(default="inherit", pattern="^(headless|headed|inherit)$")
     phone_platform: str = Field(default="inherit")
@@ -104,6 +104,8 @@ async def list_accounts(group_id: Optional[int] = None):
 async def create_account(body: AccountBody):
     db = await database.get_db()
     username = body.username.strip()
+    if not body.password:
+        raise HTTPException(422, "创建账号时密码不能为空")
     g = await (await db.execute("SELECT * FROM groups WHERE id=?", (body.group_id,))).fetchone()
     if not g:
         raise HTTPException(404, "group not found")
@@ -152,15 +154,16 @@ async def update_account(account_id: int, body: AccountBody):
     if not await group.fetchone():
         raise HTTPException(404, "group not found")
     fp = fp_mod.sanitize(body.fingerprint) if body.fingerprint else fp_mod.sanitize(old["fingerprint"])
-    # totp: __CLEAR__ wipes; new non-empty value encrypts; empty keeps existing (already encrypted)
+    # totp: __CLEAR__ remains a compatible explicit wipe; empty keeps the stored value.
     if body.totp_secret == "__CLEAR__":
         totp = ""
     elif body.totp_secret.strip():
         totp = crypto.encrypt(body.totp_secret.strip())
     else:
         totp = old["totp_secret"]  # already encrypted in DB
-    # keep-old sentinel: reuse the stored (encrypted) value; new value is encrypted before write
-    if body.password == "__KEEP_OLD__":
+    # Empty password means "do not change credentials" on edit; __KEEP_OLD__
+    # remains compatible with clients created before optional-password support.
+    if body.password == "__KEEP_OLD__" or not body.password:
         password = old["password"]  # already encrypted in DB
     else:
         password = crypto.encrypt(body.password)

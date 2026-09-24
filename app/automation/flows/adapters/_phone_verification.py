@@ -139,85 +139,19 @@ async def _stable_option_box(page, option):
     return box
 
 
-async def _scroll_option_into_view(page, option, options, code: str,
-                                   listbox, box):
-    """Center the target option using wheel events before resolving a point."""
-    info = country_by_iso2(code)
-    dial_code = info["dial_code"] if info else ""
-    wheel_tried = False
-    for _ in range(12):
-        lb_box = await listbox.first.bounding_box()
-        if not lb_box:
-            return None
-        option_y = box["y"] + box["height"] / 2
-        viewport_top = lb_box["y"]
-        viewport_bottom = lb_box["y"] + lb_box["height"]
-        if viewport_top + 4 <= option_y <= viewport_bottom - 4:
-            return option, await _stable_option_box(page, option)
-
-        if not wheel_tried:
-            # Positive wheel moves lower items upward; center the option
-            # before hit-testing. One predictable gesture is enough because
-            # the fallback below handles virtualization quirks.
-            delta = max(-SCROLL_STEP, min(
-                SCROLL_STEP,
-                option_y - (viewport_top + viewport_bottom) / 2))
-            await page.mouse.move(
-                lb_box["x"] + lb_box["width"] / 2,
-                lb_box["y"] + lb_box["height"] / 2)
-            await page.mouse.wheel(0, delta)
-            wheel_tried = True
-        else:
-            # The virtualized list may keep the old absolute offset after a
-            # wheel event. Position the rendered option directly, then click
-            # it with the mouse below.
-            scrolled = await page.evaluate(
-                """dial => {
-                    const options = [...document.querySelectorAll(
-                        'div[role="option"]')];
-                    const option = options.find(item =>
-                        item.textContent.includes(`(+${dial})`));
-                    const listbox = option?.closest('[role="listbox"]');
-                    if (!option || !listbox) return false;
-                    listbox.scrollTop = option.offsetTop
-                        - listbox.clientHeight / 2 + option.offsetHeight / 2;
-                    return true;
-                }""",
-                dial_code)
-            if not scrolled:
-                return None
-        # Virtualized rows are remounted asynchronously after scrollTop moves.
-        await asyncio.sleep(0.25)
-        # The list is virtualized: after scrolling, the prior nth locator can
-        # point to a different option. Re-resolve the target text.
-        option = await _find_visible_country_option(page, options, code)
-        if option is None:
-            return None
-        box = await _stable_option_box(page, option)
-        if not box:
-            return None
-    return option, box
-
-
 async def _select_visible_country_option(page, options, code: str,
-                                         listbox, steps: list) -> bool:
+                                         steps: list) -> bool:
     """Select the target if it is currently visible in the dropdown."""
     option = await _find_visible_country_option(page, options, code)
     if option is None:
         return False
 
-    # Do not use locator.hover(): the SDK resolver rejects the humanized nth
-    # locator. Resolve the current box first, center it with wheel events,
-    # then click by page coordinates.
+    # The option is already visible, so do not "center" it again: the
+    # virtualized list can scroll past it and remount stale nth locators.
+    # Wait for its box to settle, then hit-test and click page coordinates.
     box = await _stable_option_box(page, option)
     if not box:
         return False
-
-    scrolled = await _scroll_option_into_view(
-        page, option, options, code, listbox, box)
-    if not scrolled:
-        return False
-    option, box = scrolled
 
     click_point = await _option_hit_test(
         page, option, box, SEL_COUNTRY_OPTION)
@@ -298,8 +232,7 @@ async def _pick_country(page, code: str, steps: list) -> None:
     # React Aria opens around the selected country, so scan the initial
     # viewport once. If absent, wheel-search both directions instead of
     # idling in a direction that never scrolls.
-    if await _select_visible_country_option(
-            page, options, code, listbox, steps):
+    if await _select_visible_country_option(page, options, code, steps):
         return
 
     for direction in (-1, 1):
@@ -316,8 +249,7 @@ async def _pick_country(page, code: str, steps: list) -> None:
             idle_rounds = idle_rounds + 1 if after == before else 0
             if idle_rounds >= 2:
                 break
-            if await _select_visible_country_option(
-                    page, options, code, listbox, steps):
+            if await _select_visible_country_option(page, options, code, steps):
                 return
 
     if await listbox.count():
@@ -447,7 +379,7 @@ async def provider_phone_verification(page, email: str, steps: list, *,
             if reason:
                 raise PhoneNumberUnusableError(f"提交前检测到号码不可用: {reason}")
 
-            if not await _click_continue(page, attempts=5):
+            if not await _click_continue(page, attempts=5, allow_add_phone=True):
                 raise RuntimeError("未找到手机号页 Continue 按钮")
             _step(steps, "phone_verification_submitted", "已以 SMS 方式提交手机号")
             await asyncio.sleep(2)

@@ -28,7 +28,7 @@ class GroupBody(BaseModel):
     login_url: str = Field(min_length=1, description="upstream base URL, used by the adapter")
     upstream_key: str = Field(default="", description="upstream auth key, adapter-internal")
     # legacy columns kept in DB for backward compatibility; no longer accepted
-    # from the UI — callbacks now happen inside the adapters, log-only.
+    # from the UI — callbacks now happen inside the adapters.
     callback_url: str = ""
     header_json: str = "[]"
     concurrency: int = Field(default=1, ge=1, le=config.MAX_CONCURRENCY_PER_GROUP)

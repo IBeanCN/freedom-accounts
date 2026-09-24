@@ -38,7 +38,7 @@
         <el-option v-for="item in memoryOptions" :key="item.value" :value="item.value" :label="item.label" />
       </el-select>
     </el-form-item>
-    <el-form-item label="GPU 机型" class="full-width">
+    <el-form-item label="GPU 机型">
       <el-select v-model="gpu" clearable filterable>
         <el-option v-for="item in gpuOptions" :key="item.value" :value="item.value" :label="item.label" />
       </el-select>

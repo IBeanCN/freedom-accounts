@@ -1,8 +1,62 @@
 <template>
   <div v-loading="loading">
-    <section>
-      <div class="panel-head"><h2>任务环境</h2><span class="section-hint">浏览器以什么模式运行、检测时打开哪个站点</span></div>
-      <div class="settings-grid">
+    <el-tabs v-model="activeTab" class="settings-tabs">
+      <el-tab-pane label="基础配置" name="tasks">
+        <p class="settings-tab-hint">手机号验证的基础配置</p>
+        <div class="settings-grid">
+        <el-card shadow="never" class="full-width">
+          <template #header>手机号验证</template>
+          <div class="phone-mode-row">
+            <el-radio-group v-model="form.phone_verification_mode" @change="onPhoneModeChange">
+              <el-radio-button value="manual">手动</el-radio-button>
+              <el-radio-button value="auto">自动</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div v-if="form.phone_verification_mode === 'auto'" class="phone-form-grid">
+            <el-form-item label="接码平台">
+              <el-select v-model="form.phone_verification_platform" @change="probeProvider">
+                <el-option value="hero_sms" label="HeroSMS" />
+              </el-select>
+              <div class="phone-balance-line">
+                <span class="phone-balance-text" :class="phoneBalanceState">{{ phoneBalanceText }}</span>
+                <el-button
+                  text
+                  circle
+                  size="small"
+                  title="刷新余额"
+                  aria-label="刷新余额"
+                  :icon="Refresh"
+                  :loading="phoneBalanceLoading"
+                  @click="probeProvider"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input v-model="phoneApiKey" type="password" show-password autocomplete="new-password" :placeholder="appStore.settings.phone_verification_api_key_set ? '已配置（留空保持不变）' : '未配置'" @blur="probeProvider" />
+              <div class="section-hint">Key 加密保存；留空表示不修改已有 Key</div>
+            </el-form-item>
+            <el-form-item label="国家列表">
+              <el-select v-model="form.phone_verification_country" clearable filterable>
+                <el-option v-for="country in appStore.phoneCountries" :key="country.code" :value="country.code" :label="country.name ? `${country.name}（${country.code}）` : country.code" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="国家编码">
+              <el-select v-model="form.phone_verification_page_country" clearable filterable>
+                <el-option v-for="country in pageCountries" :key="country.code" :value="country.code" :label="`${country.name}（${country.code} +${country.dial_code}）`" />
+                <el-option v-if="legacyPageCountry" :value="form.phone_verification_page_country" :label="`${form.phone_verification_page_country}（存量）`" />
+              </el-select>
+            </el-form-item>
+            <p v-if="phoneError" class="phone-error">{{ phoneError }}</p>
+          </div>
+          <p class="section-hint">自动流程会查余额、获取号码、轮询验证码并确认收到；配置不完整或平台调用失败时回退手动。</p>
+          <template #footer><el-button type="primary" @click="savePhone">保存</el-button></template>
+        </el-card>
+      </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="指纹配置" name="fingerprint">
+        <p class="settings-tab-hint">浏览器运行模式、检测站点、指纹引擎与默认时区位置</p>
+        <div class="settings-grid">
         <el-card shadow="never">
           <template #header>浏览器模式（全局默认）</template>
           <el-radio-group v-model="form.global_browser_mode">
@@ -20,45 +74,6 @@
           <template #footer><el-button type="primary" @click="save({ fp_check_url: form.fp_check_url.trim() }, '检测站点地址已保存')">保存</el-button></template>
         </el-card>
 
-        <el-card shadow="never" class="full-width">
-          <template #header>手机号验证</template>
-          <el-radio-group v-model="form.phone_verification_mode" @change="onPhoneModeChange">
-            <el-radio-button value="manual">手动</el-radio-button>
-            <el-radio-button value="auto">自动</el-radio-button>
-          </el-radio-group>
-          <div v-if="form.phone_verification_mode === 'auto'" class="form-grid page-panel">
-            <el-form-item label="接码平台">
-              <el-select v-model="form.phone_verification_platform">
-                <el-option value="hero_sms" label="HeroSMS" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="API Key">
-              <el-input v-model="phoneApiKey" type="password" show-password autocomplete="new-password" :placeholder="appStore.settings.phone_verification_api_key_set ? '已配置（留空保持不变）' : '未配置'" @blur="probeProvider" />
-              <div class="section-hint">Key 加密保存；留空表示不修改已有 Key</div>
-            </el-form-item>
-            <el-form-item label="国家列表">
-              <el-select v-model="form.phone_verification_country" clearable filterable>
-                <el-option v-for="country in appStore.phoneCountries" :key="country.code" :value="country.code" :label="country.name ? `${country.name}（${country.code}）` : country.code" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="国家编码">
-              <el-select v-model="form.phone_verification_page_country" clearable filterable>
-                <el-option v-for="country in pageCountries" :key="country.code" :value="country.code" :label="`${country.name}（${country.code} +${country.dial_code}）`" />
-                <el-option v-if="legacyPageCountry" :value="form.phone_verification_page_country" :label="`${form.phone_verification_page_country}（存量）`" />
-              </el-select>
-            </el-form-item>
-          </div>
-          <el-alert v-if="phoneBalance" :title="phoneBalance" type="success" :closable="false" class="page-panel" />
-          <el-alert v-if="phoneError" :title="phoneError" type="error" :closable="false" class="page-panel" />
-          <p class="section-hint">自动流程会查余额、获取号码、轮询验证码并确认收到；配置不完整或平台调用失败时回退手动。</p>
-          <template #footer><el-button type="primary" @click="savePhone">保存</el-button></template>
-        </el-card>
-      </div>
-    </section>
-
-    <section>
-      <div class="panel-head"><h2>指纹环境</h2><span class="section-hint">引擎提供指纹，时区与地区是指纹的组成部分</span></div>
-      <div class="settings-grid">
         <el-card shadow="never">
           <template #header>指纹浏览器引擎</template>
           <div class="cell-stack page-panel">
@@ -90,11 +105,11 @@
           </template>
         </el-card>
       </div>
-    </section>
+      </el-tab-pane>
 
-    <section>
-      <div class="panel-head"><h2>数据与安全</h2><span class="section-hint">服务端数据保留策略与管理员凭据</span></div>
-      <div class="settings-grid">
+      <el-tab-pane label="数据与安全" name="security">
+        <p class="settings-tab-hint">服务端数据保留策略与管理员凭据</p>
+        <div class="settings-grid">
         <el-card shadow="never">
           <template #header>账号日志保留</template>
           <el-form-item label="保留天数（1–365）"><el-input-number v-model="form.log_retention_days" :min="1" :max="365" :controls="false" /></el-form-item>
@@ -120,13 +135,15 @@
           <template #footer><el-button type="primary" @click="save({ token_refresh_interval_seconds: form.token_refresh_interval_seconds }, `Token 自动刷新间隔已设为 ${form.token_refresh_interval_seconds} 秒`)">保存</el-button></template>
         </el-card>
       </div>
-    </section>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
+import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api/client'
 import { appStore } from '@/stores/app'
 
@@ -134,8 +151,10 @@ const loading = ref(false)
 const resolvingGeo = ref(false)
 const phoneApiKey = ref('')
 const phoneBalance = ref('')
+const phoneBalanceLoading = ref(false)
 const phoneError = ref('')
 const pageCountries = ref([])
+const activeTab = ref('tasks')
 const password = reactive({ old: '', new: '' })
 
 const form = reactive({
@@ -163,6 +182,19 @@ const licenseText = computed(() => ({
 }[engine.value.license_key_source] || '未知'))
 const legacyPageCountry = computed(() => Boolean(form.phone_verification_page_country)
   && !pageCountries.value.some((country) => country.code === form.phone_verification_page_country))
+const phoneBalanceState = computed(() => {
+  if (phoneBalanceLoading.value) return 'is-loading'
+  if (phoneBalance.value) return 'is-ok'
+  return 'is-error'
+})
+const phoneBalanceText = computed(() => {
+  if (phoneBalanceLoading.value) return '余额：查询中'
+  if (phoneBalance.value) return `余额：${phoneBalance.value}`
+  if (!phoneApiKey.value.trim() && !appStore.settings.phone_verification_api_key_set) {
+    return '余额：未配置查询接口'
+  }
+  return '余额：查询失败'
+})
 
 onMounted(load)
 
@@ -191,10 +223,7 @@ async function load() {
     await appStore.loadSettings()
     await loadPageCountries(appStore.settings.phone_verification_page_country || '')
     if (form.phone_verification_mode === 'auto') {
-      await appStore.loadPhoneCountries({
-        platform: form.phone_verification_platform,
-        savedCountry: form.phone_verification_country,
-      })
+      await probeProvider()
     }
   } catch (error) {
     ElMessage.error(error.message)
@@ -221,16 +250,21 @@ async function loadPageCountries(savedCountry = '') {
 
 async function onPhoneModeChange(mode) {
   if (mode !== 'auto') return
-  if (phoneApiKey.value.trim()) await probeProvider()
-  else await appStore.loadPhoneCountries({ platform: form.phone_verification_platform, savedCountry: form.phone_verification_country })
+  await probeProvider()
 }
 
 async function probeProvider() {
+  if (phoneBalanceLoading.value) return
+  phoneBalanceLoading.value = true
   phoneBalance.value = ''
   phoneError.value = ''
-  const result = await appStore.testPhoneProvider(form.phone_verification_platform, phoneApiKey.value.trim())
-  phoneBalance.value = result.balance ? `${form.phone_verification_platform === 'hero_sms' ? 'HeroSMS' : form.phone_verification_platform} 余额: ${result.balance}` : ''
-  phoneError.value = result.error || appStore.phoneCountryError
+  try {
+    const result = await appStore.testPhoneProvider(form.phone_verification_platform, phoneApiKey.value.trim())
+    phoneBalance.value = result.balance || ''
+    phoneError.value = result.error || appStore.phoneCountryError
+  } finally {
+    phoneBalanceLoading.value = false
+  }
 }
 
 async function savePhone() {
@@ -243,6 +277,7 @@ async function savePhone() {
   if (phoneApiKey.value.trim()) body.phone_verification_api_key = phoneApiKey.value.trim()
   await appStore.saveSettings(body, '手机号验证设置已保存')
   phoneApiKey.value = ''
+  if (form.phone_verification_mode === 'auto') await probeProvider()
 }
 
 function geoBody() {

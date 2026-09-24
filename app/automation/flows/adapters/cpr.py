@@ -18,7 +18,7 @@ Upstream wire contract (verified against the codex-proxy-rs source):
   - POST   {base}/api/admin/accounts/refresh                     → data.{account, result?, error?}
            body: {"accountId":<id>}
 
-五个凭证操作只写 adapter_logs；refresh_token 可由账号页面 API 触发，其余仍为内部调用。
+凭证操作会写入 adapter_logs 审计；refresh_token 可由账号页面 API 触发，其余仍为内部调用。
 """
 import httpx
 
@@ -163,11 +163,11 @@ async def run_cpr_async(ctx, username: str, password: str, totp_secret: str,
 class CprAdapter(FlowAdapter):
     key = "cpr"
     label = "CPR（codex-proxy-rs）"
-    description = "指纹浏览器完成 OpenAI OAuth 授权；凭证操作对接 codex-proxy-rs 管理 API（仅记日志）"
+    description = ""
     run_sync = staticmethod(run_cpr_sync)
     run_async = staticmethod(run_cpr_async)
 
-    # ---- credential operations (log-only, never exposed on the web) ----
+    # ---- internal credential operations ----
 
     async def list_accounts(self, group: dict) -> dict:
         try:

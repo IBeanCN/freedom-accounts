@@ -147,7 +147,9 @@ async def _fill_first(page, selector: str, value: str, attempts: int = 5) -> boo
 
 
 async def _click_continue(page, attempts: int = 5, *,
-                          allow_add_phone: bool = True) -> bool:
+                          allow_add_phone: bool = False) -> bool:
+    # add-phone has its own handler. A navigation/URL update can land between
+    # the caller's check and this click, so opt in explicitly only there.
     for _ in range(attempts):
         if not allow_add_phone and is_add_phone_url(page.url):
             return False
