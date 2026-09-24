@@ -21,6 +21,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+# Provider URLs carry credentials in query strings; never log them at INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager

@@ -4,7 +4,13 @@ import logging
 
 log = logging.getLogger(__name__)
 
-from .base import PhoneCountry, PhoneOrder, PhoneProviderAdapter, PhoneProviderNoNumbers
+from .base import (
+    PhoneCountry,
+    PhoneOrder,
+    PhoneProviderAdapter,
+    PhoneProviderNoNumbers,
+)
+from .countries import country_by_iso2
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 TIMEOUT = 30
@@ -13,6 +19,7 @@ NUMBER_RETRY_SECONDS = 3
 # HeroSMS's legacy API code for its OpenAI/ChatGPT service; visible in the
 # website asset path as dr0.webp while the public page slug is "chatgpt".
 SERVICE = "dr"
+
 # QA escape hatch only; must stay false in production so no mock orders run.
 MOCK_GET_NUMBER = False
 
@@ -62,13 +69,20 @@ class HeroSmsAdapter(PhoneProviderAdapter):
             return resp.split(":", 1)[1].strip()
         raise RuntimeError(f"HeroSMS getBalance 失败: {resp}")
 
-    async def get_number(self, api_key: str, country: str) -> PhoneOrder:
+    async def get_number(self, api_key: str, country: str,
+                         page_country: str = "") -> PhoneOrder:
         country_code = country.strip()
         if not country_code:
             raise RuntimeError("HeroSMS 取号缺少国家 ID")
         if MOCK_GET_NUMBER:
+            info = country_by_iso2(page_country.strip().upper())
+            if not info:
+                raise RuntimeError(f"mock 取号不支持页面国家: {page_country}")
+            # The dial prefix follows page settings. This national segment
+            # follows Mexico's valid 10-digit numbering pattern for page QA.
+            phone = f"{info['dial_code']}3339539329"
             await asyncio.sleep(0.2)
-            return PhoneOrder(phone="525500000000",
+            return PhoneOrder(phone=phone,
                               provider_order_id=f"mock-{country_code}")
         for attempt in range(1, NUMBER_ATTEMPTS + 1):
             resp = await self._api(

@@ -10,6 +10,7 @@ auth.openai.com 的页面操作与上游无关：
 选择器与 s2accheck 插件（/Users/ibean/Documents/s2accheck）逐字一致。
 """
 import asyncio
+import json
 import random
 import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
@@ -34,6 +35,92 @@ SEL_PASSWORD = 'input[type="password"], input[name="password"], input#password'
 SEL_TOTP = 'input[type="text"][name="code"]'
 SEL_CONTINUE = 'button[data-dd-action-name="Continue"]'
 
+# Read-only add-phone diagnostics. OpenAI virtualizes the country list and can
+# mutate controls without navigation, so retain a small in-page event trail.
+_PHONE_DOM_OBSERVER_SCRIPT = """() => {
+    if (window.__faPhoneDom) return;
+    const state = { events: [], latest: {}, errors: [] };
+    window.__faPhoneDom = state;
+    const selectors = {
+        trigger: 'button[aria-haspopup="listbox"], div[data-trigger="Select"]',
+        listbox: '[role="listbox"]',
+        option: 'div[role="option"]',
+        tel: 'input#tel',
+        sms: 'input[type="radio"][value="sms"]',
+        code: 'input[name="code"]',
+        error: '[role="alert"], .react-aria-FieldError, [aria-live]',
+    };
+    const pushErrors = () => {
+        const text = [...document.querySelectorAll(selectors.error)]
+            .map(item => (item.innerText || item.textContent || '').trim())
+            .filter(Boolean).join(' | ').slice(0, 500);
+        if (!text) return;
+        const key = `${location.pathname}:${text}`;
+        if (state.errors.some(item => item.key === key)) return;
+        state.errors.push({
+            key,
+            at: new Date().toISOString(),
+            url: location.href,
+            text,
+        });
+        if (state.errors.length > 20) state.errors.splice(0, state.errors.length - 20);
+    };
+    const push = (reason) => {
+        if (!/(^|\\.)openai\\.com$/.test(location.hostname)) return;
+        const path = location.pathname;
+        if (path !== '/add-phone' && path !== '/phone-verification') return;
+        const counts = {};
+        for (const [name, selector] of Object.entries(selectors)) {
+            counts[name] = document.querySelectorAll(selector).length;
+        }
+        const trigger = document.querySelector(selectors.trigger);
+        const options = [...document.querySelectorAll(selectors.option)]
+            .map(item => (item.innerText || item.textContent || '').trim())
+            .filter(Boolean).slice(0, 20);
+        const listbox = document.querySelector(selectors.listbox);
+        const event = {
+            at: new Date().toISOString(),
+            url: location.href,
+            reason,
+            counts,
+            trigger: (trigger?.innerText || trigger?.getAttribute('aria-label') || '').trim(),
+            scroll_top: listbox ? listbox.scrollTop : null,
+            options,
+        };
+        state.latest[path] = event;
+        state.events.push(event);
+        if (state.events.length > 20) state.events.splice(0, state.events.length - 20);
+        pushErrors();
+    };
+    let scheduled = false;
+    const schedule = (reason) => {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(() => {
+            scheduled = false;
+            push(reason);
+        }, 50);
+    };
+    const observer = new MutationObserver(() => schedule('mutation'));
+    const install = () => {
+        observer.observe(document.documentElement, {
+            childList: true, subtree: true, attributes: true,
+        });
+        for (const method of ['pushState', 'replaceState']) {
+            const original = history[method];
+            history[method] = function (...args) {
+                const result = original.apply(this, args);
+                schedule(method);
+                return result;
+            };
+        }
+        window.addEventListener('popstate', () => schedule('popstate'));
+        push('init');
+    };
+    if (document.documentElement) install();
+    else document.addEventListener('DOMContentLoaded', install, { once: true });
+}"""
+
 
 def is_localhost(url: str) -> bool:
     try:
@@ -52,6 +139,46 @@ def is_add_phone_url(url: str) -> bool:
                 and actual.path.rstrip("/") == expected.path)
     except Exception:
         return False
+
+
+async def install_phone_dom_observer(page) -> None:
+    """Install best-effort diagnostics without changing add-phone behavior."""
+    try:
+        await page.add_init_script(f"({_PHONE_DOM_OBSERVER_SCRIPT})()")
+    except Exception:
+        pass
+
+
+async def collect_phone_dom_events(page, steps: list) -> None:
+    """Drain recent add-phone DOM snapshots into task steps for diagnosis."""
+    try:
+        payload = await page.evaluate(
+            """() => ({
+                events: (window.__faPhoneDom?.events || []).splice(0, 20),
+                latest: window.__faPhoneDom?.latest?.[location.pathname] || null,
+            })""")
+    except Exception as e:
+        _step(steps, "phone_dom_events", f"读取 DOM 监听失败: {e}", ok=False)
+        return
+    for event in payload.get("events") or []:
+        _step(steps, "phone_dom_events", json.dumps(event, ensure_ascii=False))
+    snapshot = payload.get("latest")
+    if snapshot and snapshot not in (payload.get("events") or []):
+        _step(steps, "phone_dom_events", json.dumps(snapshot, ensure_ascii=False))
+
+
+async def drain_phone_dom_errors(page, steps: list) -> list:
+    """Drain error nodes captured by the observer without changing the page."""
+    try:
+        errors = await page.evaluate(
+            "() => (window.__faPhoneDom?.errors || []).splice(0, 20)")
+    except Exception as e:
+        _step(steps, "phone_dom_error", f"读取页面错误监听失败: {e}", ok=False)
+        return []
+    for error in errors:
+        _step(steps, "phone_dom_error",
+              json.dumps(error, ensure_ascii=False), ok=False)
+    return errors
 
 
 async def manual_phone_verification(page, email: str, steps: list) -> None:
@@ -87,6 +214,7 @@ async def _handle_add_phone(page, email: str, steps: list, *, cdp_engine: bool,
                   f"接码平台连续取号失败，任务停止: {e}", ok=False)
             raise
         except Exception as e:
+            await collect_phone_dom_events(page, steps)
             # A provider outage must not strand a local headed browser at the
             # gate: the user can finish the same page manually.
             _step(steps, "phone_verification_fallback",
@@ -177,6 +305,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     page.set_default_timeout(30000)
     captured: dict = {}
+    await install_phone_dom_observer(page)
 
     def _on_request(req):
         if not captured and is_localhost(req.url):

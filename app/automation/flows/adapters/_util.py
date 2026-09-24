@@ -16,7 +16,8 @@ def totp_code(secret: str) -> str | None:
 
 
 def now() -> str:
-    return time.strftime("%H:%M:%S")
+    # Keep adapter step timestamps in the same format as scheduler task fields.
+    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # 上游账号状态 -> 中文（sub2api 与 cpr 共用同一套语义）

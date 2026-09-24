@@ -21,7 +21,10 @@ from ..core import crypto
 from . import browser as browser_mod
 from . import flows
 from .flows.adapters._openai_browser import redact_callback_url
-from .flows.adapters._phone_verification import provider_phone_verification
+from .flows.adapters._phone_verification import (
+    PhoneVerificationTerminalError,
+    provider_phone_verification,
+)
 from .phone import get_phone_adapter
 
 _groups: dict[int, dict] = {}   # group_id -> {"queue": Queue, "dispatcher": Task, "sem": Semaphore}
@@ -355,10 +358,10 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     closer = None
     try:
         cur = await db.execute(
-            "INSERT INTO tasks(group_id,account_id,status,created_at) VALUES(?,?, 'running', ?)",
-            (group_id, account_id, _now()))
+            """INSERT INTO tasks(group_id,account_id,status,created_at,started_at)
+               VALUES(?,?, 'running', ?, ?)""",
+            (group_id, account_id, started_at, started_at))
         task_id = cur.lastrowid
-        started_at = _now()
         steps.bind(db, task_id)
         steps.append({"t": _now(), "step": "task_created", "detail": f"task#{task_id}", "ok": True})
         await db.execute(
@@ -415,17 +418,29 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             steps.append({"t": _now(), "step": "fingerprint_detail",
                           "detail": json.dumps(_fp_brief, ensure_ascii=False), "ok": True})
 
+        keep_browser_open = False
         try:
             result = await flows.run_flow(g["login_type"], ctx, a["username"], password,
                                           totp_secret, g["login_url"], steps,
                                           group=group_decrypted or dict(g), account=dict(a),
                                           cdp_engine=await browser_mod.cdp_configured(),
                                           phone_handler=await _resolve_phone_handler(steps, g, a))
+        except Exception as exc:
+            keep_browser_open = isinstance(exc, PhoneVerificationTerminalError)
+            raise
         finally:
-            try:
-                await _close_protected(closer)
-            finally:
-                steps.append({"t": _now(), "step": "browser_closed", "detail": "-", "ok": True})
+            if keep_browser_open:
+                browser_mod.detach_task_context(
+                    f"g{group_id}_a{account_id}")
+                closer = None
+                steps.append({"t": _now(), "step": "browser_left_open",
+                              "detail": "手机号验证终态，浏览器保持打开", "ok": False})
+            else:
+                try:
+                    await _close_protected(closer)
+                finally:
+                    steps.append({"t": _now(), "step": "browser_closed",
+                                  "detail": "-", "ok": True})
         result_json = result
         if isinstance(result_json, dict):
             for key in ("callback_url", "url"):

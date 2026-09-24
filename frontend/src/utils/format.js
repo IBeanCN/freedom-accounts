@@ -10,6 +10,12 @@ export function fmtTime(value) {
   return text.length > 16 ? text.slice(0, 16) : text
 }
 
+export function fmtStepTime(value) {
+  if (!value) return '—'
+  const text = String(value).replace('T', ' ')
+  return text.match(/(\d{2}:\d{2}:\d{2})/)?.[1] || text
+}
+
 export function safeJson(value, fallback) {
   if (value == null || value === '') return fallback
   if (typeof value === 'object') return value

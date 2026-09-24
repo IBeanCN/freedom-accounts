@@ -6,12 +6,14 @@ import { ElCheckbox } from 'element-plus/es/components/checkbox/index'
 import { ElConfigProvider } from 'element-plus/es/components/config-provider/index'
 import { ElDialog } from 'element-plus/es/components/dialog/index'
 import { ElDivider } from 'element-plus/es/components/divider/index'
+import { ElDrawer } from 'element-plus/es/components/drawer/index'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index'
 import { ElIcon } from 'element-plus/es/components/icon/index'
 import { ElInput } from 'element-plus/es/components/input/index'
 import { ElInputNumber } from 'element-plus/es/components/input-number/index'
 import { ElLoadingDirective } from 'element-plus/es/components/loading/index'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index'
+import { ElPagination } from 'element-plus/es/components/pagination/index'
 import { ElRadioButton, ElRadioGroup } from 'element-plus/es/components/radio/index'
 import { ElSegmented } from 'element-plus/es/components/segmented/index'
 import { ElSwitch } from 'element-plus/es/components/switch/index'
@@ -37,12 +39,14 @@ const elementComponents = [
   ElConfigProvider,
   ElDialog,
   ElDivider,
+  ElDrawer,
   ElForm,
   ElFormItem,
   ElIcon,
   ElInput,
   ElInputNumber,
   ElOption,
+  ElPagination,
   ElRadioButton,
   ElRadioGroup,
   ElSegmented,

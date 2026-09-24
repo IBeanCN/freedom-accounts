@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="dialogTitle" width="900px">
+  <el-drawer v-model="visible" size="min(720px, 100vw)">
     <template #header>
       <div>
         <h3 class="page-title">{{ dialogTitle }}</h3>
@@ -7,13 +7,22 @@
       </div>
     </template>
     <div v-loading="loading">
-      <template v-if="history">
+      <template v-if="history && !task">
         <button v-for="task in tasks" :key="task.id" class="hist-row" type="button" @click="showDetail(task)">
           <el-tag :type="statusMeta(task.status).type">{{ statusMeta(task.status).label }}</el-tag>
           <span>任务 #{{ task.id }}</span>
           <span class="section-hint">{{ fmtTime(task.created_at) }}</span>
         </button>
         <div v-if="!tasks.length" class="empty-state">该账号暂无任务记录。</div>
+        <div v-if="total > pageSize" class="history-pagination">
+          <el-pagination
+            :current-page="page"
+            :page-size="pageSize"
+            :total="total"
+            layout="total, prev, pager, next"
+            @current-change="emit('page-change', $event)"
+          />
+        </div>
       </template>
       <template v-else-if="task">
         <div class="detail-grid">
@@ -23,10 +32,6 @@
             <span><el-tag :type="taskStatusMeta(task).type">{{ taskStatusMeta(task).label }}</el-tag></span>
           </div>
           <div class="detail-item"><span class="detail-key">浏览器模式</span><span class="detail-val">{{ modeText(task.browser_mode) }}</span></div>
-          <div class="detail-item">
-            <span class="detail-key">回调状态</span>
-            <span><el-tag :type="callbackMeta(task.callback_status).type">{{ callbackMeta(task.callback_status).label }}</el-tag></span>
-          </div>
           <div class="detail-item"><span class="detail-key">开始时间</span><span class="detail-val">{{ fmtTime(task.started_at) }}</span></div>
           <div class="detail-item"><span class="detail-key">结束时间</span><span class="detail-val">{{ fmtTime(task.finished_at) }}</span></div>
         </div>
@@ -48,7 +53,7 @@
               class="task-step"
               :class="{ 'is-error': step.ok === false }"
             >
-              <time class="task-step-time">{{ fmtTime(step.time) }}</time>
+              <time class="task-step-time">{{ fmtStepTime(step.time) }}</time>
               <span class="task-step-marker" aria-hidden="true"></span>
               <div class="task-step-body">
                 <div class="task-step-title-row">
@@ -72,17 +77,18 @@
       </template>
     </div>
     <template #footer>
+      <el-button :loading="loading" @click="refresh">{{ selectedTask ? '刷新日志' : '刷新' }}</el-button>
       <el-button v-if="history" @click="closeOrBack">{{ selectedTask ? '返回' : '关闭' }}</el-button>
       <el-button v-else type="primary" @click="visible = false">关闭</el-button>
     </template>
-  </el-dialog>
+  </el-drawer>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
-import { fmtTime, modeText, safeJson, isEmpty } from '@/utils/format'
-import { callbackMeta, statusMeta, taskStatusMeta } from '@/utils/status'
+import { fmtStepTime, fmtTime, modeText, safeJson, isEmpty } from '@/utils/format'
+import { statusMeta, taskStatusMeta } from '@/utils/status'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -91,8 +97,11 @@ const props = defineProps({
   history: Boolean,
   tasks: { type: Array, default: () => [] },
   context: { type: Object, default: null },
+  total: { type: Number, default: 0 },
+  page: { type: Number, default: 1 },
+  pageSize: { type: Number, default: 5 },
 })
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'refresh', 'page-change'])
 const visible = computed({
   get: () => props.modelValue,
   set: (value) => emit('update:modelValue', value),
@@ -221,6 +230,11 @@ function closeOrBack() {
     visible.value = false
   }
 }
+
+function refresh() {
+  if (selectedTask.value) return showDetail(selectedTask.value)
+  emit('refresh')
+}
 </script>
 
 <style scoped>
@@ -235,6 +249,12 @@ function closeOrBack() {
 .task-step-count {
   color: var(--fa-muted);
   font-size: 12px;
+}
+
+.history-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .task-step-list {

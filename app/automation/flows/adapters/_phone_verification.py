@@ -6,7 +6,14 @@ import time
 
 from ...phone import PhoneProviderAdapter
 from ...phone.countries import country_by_iso2
-from ._openai_browser import _click_continue, _fill_first, _step, is_add_phone_url
+from ._openai_browser import (
+    _click_continue,
+    _fill_first,
+    _step,
+    collect_phone_dom_events,
+    drain_phone_dom_errors,
+    is_add_phone_url,
+)
 
 NAVIGATION_POLL_SECONDS = 2.0
 NAVIGATION_WAIT_ROUNDS = 90       # 3 minutes per page transition
@@ -26,6 +33,12 @@ SCROLL_MAX_ROUNDS = 60         # generous cap; ~12000 px total scroll
 
 class PhoneNumberUnusableError(RuntimeError):
     """OpenAI rejected the number or refused SMS-only delivery."""
+
+
+class PhoneVerificationTerminalError(RuntimeError):
+    """A code-page failure must finish the task but leave its browser open."""
+
+    keep_browser_open = True
 
 
 def _strip_country_code(phone: str, page_country: str) -> str:
@@ -57,8 +70,13 @@ async def _wait_left_add_phone(page) -> None:
     raise RuntimeError("等待手机号验证页面跳转超时")
 
 
-async def _wait_code_page_left(page) -> None:
+async def _wait_code_page_left(page, steps: list) -> None:
     for _ in range(NAVIGATION_WAIT_ROUNDS):
+        if await drain_phone_dom_errors(page, steps):
+            reason = await _page_error_reason(page)
+            await collect_phone_dom_events(page, steps)
+            raise PhoneVerificationTerminalError(
+                f"验证码页面错误: {reason or 'DOM 监听捕获错误节点'}")
         if "/phone-verification" not in page.url:
             return
         await asyncio.sleep(NAVIGATION_POLL_SECONDS)
@@ -156,8 +174,12 @@ async def _select_visible_country_option(page, options, code: str,
     click_point = await _option_hit_test(
         page, option, box, SEL_COUNTRY_OPTION)
     if not isinstance(click_point, dict) or "x" not in click_point:
-        raise RuntimeError(
-            f"国家选项 {code} 被其他元素遮挡: {click_point}; box={box}")
+        # Virtualized options can report visible while their box is still
+        # below/above the viewport. Return so the wheel search can continue.
+        _step(steps, "phone_verification_option_skipped",
+              f"国家选项 {code} 尚不可点击，继续滚动: {click_point}; box={box}",
+              ok=False)
+        return False
 
     await page.mouse.move(click_point["x"], click_point["y"])
     await page.mouse.click(click_point["x"], click_point["y"])
@@ -202,6 +224,15 @@ async def _confirm_country(page, code: str, option, steps: list) -> bool:
     return False
 
 
+async def _wait_dropdown_closed(page) -> None:
+    """Wait through React Aria's close/remount window before page input."""
+    listbox = page.locator('[role="listbox"]')
+    for _ in range(20):
+        if not await listbox.count():
+            return
+        await asyncio.sleep(0.25)
+
+
 async def _pick_country(page, code: str, steps: list) -> None:
     """Wheel-search both directions, then mouse-click the target option."""
     trigger = page.locator(SEL_COUNTRY_TRIGGER)
@@ -233,6 +264,7 @@ async def _pick_country(page, code: str, steps: list) -> None:
     # viewport once. If absent, wheel-search both directions instead of
     # idling in a direction that never scrolls.
     if await _select_visible_country_option(page, options, code, steps):
+        await _wait_dropdown_closed(page)
         return
 
     for direction in (-1, 1):
@@ -250,10 +282,12 @@ async def _pick_country(page, code: str, steps: list) -> None:
             if idle_rounds >= 2:
                 break
             if await _select_visible_country_option(page, options, code, steps):
+                await _wait_dropdown_closed(page)
                 return
 
     if await listbox.count():
         await page.keyboard.press("Escape")
+    await collect_phone_dom_events(page, steps)
     label = await _country_trigger_label(page)
     raise RuntimeError(f"滚动后未找到或未选中国家选项 {code}（触发器：{label}）")
 
@@ -266,22 +300,32 @@ async def _receive_and_submit_code(page, steps: list, *,
     deadline = time.monotonic() + CODE_WAIT_SECONDS
     while True:
         code = await adapter.get_code(api_key, order)
+        dom_errors = await drain_phone_dom_errors(page, steps)
+        if dom_errors:
+            reason = await _page_error_reason(page)
+            await collect_phone_dom_events(page, steps)
+            raise PhoneVerificationTerminalError(
+                f"验证码页面错误: {reason or 'DOM 监听捕获错误节点'}")
         if code:
             _step(steps, "phone_verification_code_received", "接码平台已返回验证码")
             break
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"等待验证码超时（{CODE_WAIT_SECONDS:.0f}s）")
+            await collect_phone_dom_events(page, steps)
+            raise PhoneVerificationTerminalError(
+                f"等待验证码超时（{CODE_WAIT_SECONDS:.0f}s）")
         await asyncio.sleep(CODE_POLL_SECONDS)
 
     if not await _fill_first(page, SEL_CODE_INPUT, code, attempts=5):
-        raise RuntimeError("未找到验证码输入框 input[name=code]")
+        await collect_phone_dom_events(page, steps)
+        raise PhoneVerificationTerminalError("未找到验证码输入框 input[name=code]")
     _step(steps, "phone_verification_code_filled", "已填入验证码")
     await asyncio.sleep(random.uniform(5, 10))
     if not await _click_continue(page, attempts=5):
-        raise RuntimeError("未找到验证码页 Continue 按钮")
+        await collect_phone_dom_events(page, steps)
+        raise PhoneVerificationTerminalError("未找到验证码页 Continue 按钮")
     status["code_submitted"] = True
     _step(steps, "phone_verification_code_submitted", "已提交验证码")
-    await _wait_code_page_left(page)
+    await _wait_code_page_left(page, steps)
     try:
         await adapter.confirm_received(api_key, order)
         _step(steps, "phone_verification_confirmed", "已确认接码平台收到验证码")
@@ -302,6 +346,31 @@ async def _cancel_order_safely(adapter: PhoneProviderAdapter, api_key: str,
         detail = str(e).replace(api_key, "***") if api_key else str(e)
         _step(steps, "phone_verification_order_cancel_failed",
               f"{reason}失败: {detail}", ok=False)
+
+
+async def _fill_phone_number(page, phone: str, steps: list) -> bool:
+    """Focus once and type exactly one value; never retry over stale input."""
+    try:
+        # React Aria can keep the closing dropdown mounted while the phone
+        # field remounts. Wait for the field, but never retype over a value.
+        loc = page.locator(SEL_PHONE_TEL)
+        for _ in range(20):
+            if await loc.count():
+                break
+            await asyncio.sleep(0.25)
+        if not await loc.count():
+            return False
+        await loc.first.click()
+        await page.keyboard.type(phone, delay=random.uniform(30, 80))
+        await asyncio.sleep(0.5)
+        tel_digits = re.sub(r"\D", "",
+                            await loc.first.input_value() or "")
+        return tel_digits == phone
+    except Exception as e:
+        await collect_phone_dom_events(page, steps)
+        _step(steps, "phone_verification_input_error",
+              f"手机号输入失败: {e}", ok=False)
+        return False
 
 
 async def _page_error_reason(page) -> str:
@@ -350,7 +419,7 @@ async def provider_phone_verification(page, email: str, steps: list, *,
     await _pick_country(page, page_country, steps)
 
     for attempt in range(1, PHONE_NUMBER_ATTEMPTS + 1):
-        order = await adapter.get_number(api_key, country)
+        order = await adapter.get_number(api_key, country, page_country=page_country)
         code_submitted = False
         verification_status = {"code_submitted": False}
         phone = _strip_country_code(order.phone, page_country)
@@ -360,14 +429,15 @@ async def provider_phone_verification(page, email: str, steps: list, *,
               f"订单 {order.provider_order_id}")
 
         try:
-            if not await _fill_first(page, SEL_PHONE_TEL, phone, attempts=10):
+            if not await _fill_phone_number(page, phone, steps):
                 raise RuntimeError("未找到手机号输入框 input#tel")
             tel_value = await page.locator(SEL_PHONE_TEL).first.input_value()
-            tel_digits = re.sub(r"\D", "", tel_value or "")
-            if tel_digits != phone:
-                raise RuntimeError(
-                    f"手机号回读不一致（期望 {phone}，实际输入框 {tel_value}）")
-            _step(steps, "phone_verification_filled", f"已填入并回读手机号 {phone}")
+            trigger_label = await _country_trigger_label(page)
+            if not _country_label_matches(trigger_label, page_country):
+                raise PhoneNumberUnusableError(
+                    f"手机号输入后国家被重置（触发器：{trigger_label}）")
+            _step(steps, "phone_verification_filled",
+                  f"已人工输入并回读手机号 {tel_value}；国家仍为 {trigger_label}")
 
             reason = await _page_error_reason(page)
             if reason:
@@ -390,6 +460,8 @@ async def provider_phone_verification(page, email: str, steps: list, *,
                     raise PhoneNumberUnusableError(f"提交后 OpenAI 返回错误: {reason}")
 
             if "/phone-verification" in page.url:
+                _step(steps, "phone_verification_code_page", "已进入验证码页面")
+                await collect_phone_dom_events(page, steps)
                 await asyncio.sleep(random.uniform(5, 10))
                 await _receive_and_submit_code(
                     page, steps, adapter=adapter, api_key=api_key, order=order,

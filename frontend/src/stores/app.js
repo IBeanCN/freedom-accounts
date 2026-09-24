@@ -40,9 +40,12 @@ export const appStore = reactive({
   fpStopPending: new Set(),
   accountAutoRefreshSeconds: '',
   accountAutoRefreshTimer: null,
+  accountAutoRefreshTicker: null,
+  accountAutoRefreshRemaining: 0,
 
   tasks: [],
   taskFilter: '',
+  taskTotal: 0,
   taskMetrics: { total: 0, success: 0, failed: 0, running: 0 },
 
   phoneCountries: [],
@@ -232,15 +235,29 @@ export const appStore = reactive({
 
   resetAccountRefresh() {
     clearTimeout(this.accountAutoRefreshTimer)
+    clearInterval(this.accountAutoRefreshTicker)
     this.accountAutoRefreshTimer = null
+    this.accountAutoRefreshTicker = null
+    this.accountAutoRefreshRemaining = 0
     this.accountAutoRefreshSeconds = ''
   },
 
   scheduleAccountRefresh() {
     clearTimeout(this.accountAutoRefreshTimer)
+    clearInterval(this.accountAutoRefreshTicker)
     this.accountAutoRefreshTimer = null
+    this.accountAutoRefreshTicker = null
+    this.accountAutoRefreshRemaining = 0
     const seconds = Number(this.accountAutoRefreshSeconds)
     if (!seconds || !this.currentGroup || !this.authenticated) return
+    this.accountAutoRefreshRemaining = seconds
+    this.accountAutoRefreshTicker = setInterval(() => {
+      this.accountAutoRefreshRemaining = Math.max(0, this.accountAutoRefreshRemaining - 1)
+      if (this.accountAutoRefreshRemaining === 0) {
+        clearInterval(this.accountAutoRefreshTicker)
+        this.accountAutoRefreshTicker = null
+      }
+    }, 1000)
     this.accountAutoRefreshTimer = setTimeout(async () => {
       this.accountAutoRefreshTimer = null
       const groupId = this.currentGroup
@@ -445,15 +462,25 @@ export const appStore = reactive({
     }
   },
 
-  async loadTasks() {
-    const data = await api.get('/api/tasks?limit=100')
+  async loadTasks({ status = '', page = 1, pageSize = 20 } = {}) {
+    const query = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+    })
+    if (status) query.set('status', status)
+    const data = await api.get(`/api/tasks?${query}`)
     this.tasks = data.tasks || []
-    const count = (status) => this.tasks.filter((task) => task.status === status).length
-    this.taskMetrics = {
-      total: this.tasks.length,
-      success: count('success'),
-      failed: count('failed') + count('callback_failed'),
-      running: count('queued') + count('running') + count('token_queued') + count('token_running') + count('pending'),
+    this.taskTotal = data.total || this.tasks.length
+    if (data.metrics) {
+      this.taskMetrics = data.metrics
+    } else {
+      const count = (status) => this.tasks.filter((task) => task.status === status).length
+      this.taskMetrics = {
+        total: this.tasks.length,
+        success: count('success'),
+        failed: count('failed') + count('callback_failed'),
+        running: count('queued') + count('running') + count('token_queued') + count('token_running') + count('pending'),
+      }
     }
   },
 

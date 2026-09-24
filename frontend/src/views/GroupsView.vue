@@ -82,6 +82,9 @@
             <el-option label="15秒" value="15" />
             <el-option label="30秒" value="30" />
           </el-select>
+          <span v-if="appStore.accountAutoRefreshRemaining > 0" class="section-hint">
+            剩余 {{ appStore.accountAutoRefreshRemaining }} 秒
+          </span>
         </div>
         <div class="head-inline">
           <el-button :icon="Plus" @click="openAccount()">添加账号</el-button>
@@ -199,7 +202,18 @@
       :account-ids="selectedIds"
       :selected-count="selectedRows.length"
     />
-    <TaskDetailDialog v-model="showTaskDialog" history :tasks="accountTasks" title="账号最近任务" subtitle="点击任意条目查看完整详情" />
+    <TaskDetailDialog
+      v-model="showTaskDialog"
+      history
+      :tasks="accountTasks"
+      :total="accountTasksTotal"
+      :page="accountTasksPage"
+      :page-size="ACCOUNT_TASKS_PAGE_SIZE"
+      title="账号最近任务"
+      subtitle="点击任意条目查看完整详情"
+      @refresh="loadAccountTasks"
+      @page-change="changeAccountTasksPage"
+    />
   </div>
 </template>
 
@@ -224,6 +238,10 @@ const editingAccount = ref(null)
 const showBatchFingerprint = ref(false)
 const showTaskDialog = ref(false)
 const accountTasks = ref([])
+const logAccount = ref(null)
+const accountTasksPage = ref(1)
+const accountTasksTotal = ref(0)
+const ACCOUNT_TASKS_PAGE_SIZE = 10
 const refreshingTokens = ref(false)
 const accountTableRef = ref(null)
 
@@ -553,9 +571,26 @@ async function showLogs(account) {
     ElMessage.error('账号已停用，仅允许编辑/删除')
     return
   }
-  const data = await api.get(`/api/accounts/${account.id}/tasks`)
-  accountTasks.value = data.tasks || []
+  logAccount.value = account
+  accountTasksPage.value = 1
+  await loadAccountTasks()
   showTaskDialog.value = true
+}
+
+async function loadAccountTasks() {
+  if (!logAccount.value) return
+  const query = new URLSearchParams({
+    page: String(accountTasksPage.value),
+    page_size: String(ACCOUNT_TASKS_PAGE_SIZE),
+  })
+  const data = await api.get(`/api/accounts/${logAccount.value.id}/tasks?${query}`)
+  accountTasks.value = data.tasks || []
+  accountTasksTotal.value = data.total || accountTasks.value.length
+}
+
+async function changeAccountTasksPage(page) {
+  accountTasksPage.value = page
+  await loadAccountTasks()
 }
 </script>
 

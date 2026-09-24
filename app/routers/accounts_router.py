@@ -396,8 +396,25 @@ async def refresh_token(account_id: int):
 
 
 @router.get("/{account_id}/tasks")
-async def account_tasks(account_id: int, limit: int = 20):
+async def account_tasks(account_id: int, page: int = 1,
+                        page_size: int = 5, limit: int | None = None):
     db = await database.get_db()
+    page = max(1, page)
+    if limit is not None:
+        page_size = min(max(1, limit), 500)
+        page = 1
+    else:
+        page_size = min(max(1, page_size), 500)
+    offset = (page - 1) * page_size
+    total_row = await db.execute(
+        "SELECT COUNT(*) AS total FROM tasks WHERE account_id=?", (account_id,))
+    total = (await total_row.fetchone())["total"]
     rows = await db.execute(
-        "SELECT * FROM tasks WHERE account_id=? ORDER BY id DESC LIMIT ?", (account_id, limit))
-    return {"tasks": [dict(r) for r in await rows.fetchall()]}
+        """SELECT t.*, a.username, g.name AS group_name
+           FROM tasks t
+           LEFT JOIN accounts a ON a.id=t.account_id
+           LEFT JOIN groups g ON g.id=t.group_id
+           WHERE t.account_id=? ORDER BY t.id DESC LIMIT ? OFFSET ?""",
+        (account_id, page_size, offset))
+    return {"tasks": [dict(r) for r in await rows.fetchall()], "total": total,
+            "page": page, "page_size": page_size}

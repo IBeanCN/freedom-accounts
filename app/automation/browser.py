@@ -657,6 +657,13 @@ def register_task_context(key: str, closer, ctx):
     return _wrapped_close
 
 
+def detach_task_context(key: str) -> None:
+    """Leave a task browser open while excluding it from normal task cleanup."""
+    sess = _TASK_CONTEXTS.get(key)
+    if sess:
+        sess["detached"] = True
+
+
 def get_first_task_page():
     """Return the first Page from a live account-task context, or None."""
     for sess in list(_TASK_CONTEXTS.values()):

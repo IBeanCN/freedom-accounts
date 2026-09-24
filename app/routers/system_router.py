@@ -28,8 +28,14 @@ async def get_meta(_: None = Depends(require_admin)):
 # ---------------- tasks ----------------
 @router.get("/tasks")
 async def list_tasks(group_id: int | None = None, status: str | None = None,
-                     limit: int = 100, _: None = Depends(require_admin)):
+                     limit: int = 100, page: int = 1,
+                     page_size: int | None = None, _: None = Depends(require_admin)):
     db = await database.get_db()
+    page = max(1, page)
+    if page_size is None:
+        page_size = limit
+    page_size = min(max(1, page_size), 500)
+    offset = (page - 1) * page_size
     sql = """SELECT t.*, a.username, g.name AS group_name
              FROM tasks t LEFT JOIN accounts a ON a.id=t.account_id
              LEFT JOIN groups g ON g.id=t.group_id WHERE 1=1"""
@@ -38,7 +44,13 @@ async def list_tasks(group_id: int | None = None, status: str | None = None,
         sql += " AND t.group_id=?"; args.append(group_id)
     if status:
         sql += " AND t.status=?"; args.append(status)
-    sql += " ORDER BY t.id DESC LIMIT ?"; args.append(min(limit, 500))
+    count_sql = sql + " ORDER BY t.id DESC"
+    sql += " ORDER BY t.id DESC LIMIT ? OFFSET ?"
+    args.extend([page_size, offset])
+    total_row = await db.execute(count_sql.replace(
+        "SELECT t.*, a.username, g.name AS group_name",
+        "SELECT COUNT(*) AS total"), tuple(args[:-2]))
+    total = (await total_row.fetchone())["total"]
     rows = await db.execute(sql, tuple(args))
     tasks = []
     for r in await rows.fetchall():
@@ -49,7 +61,18 @@ async def list_tasks(group_id: int | None = None, status: str | None = None,
             except Exception:
                 pass
         tasks.append(d)
-    return {"tasks": tasks}
+    metric_rows = await db.execute(
+        "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status")
+    metric_map = {row["status"]: row["count"] for row in await metric_rows.fetchall()}
+    metrics = {
+        "total": sum(metric_map.values()),
+        "success": metric_map.get("success", 0),
+        "failed": metric_map.get("failed", 0) + metric_map.get("callback_failed", 0),
+        "running": sum(metric_map.get(status, 0) for status in (
+            "queued", "running", "token_queued", "token_running", "pending")),
+    }
+    return {"tasks": tasks, "total": total, "page": page,
+            "page_size": page_size, "metrics": metrics}
 
 
 @router.get("/tasks/{task_id}")

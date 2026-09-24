@@ -71,7 +71,8 @@ class PhoneProviderAdapter:
         """Return a human-readable remaining balance, e.g. ``12.30 USD``."""
         raise NotImplementedError
 
-    async def get_number(self, api_key: str, country: str) -> PhoneOrder:
+    async def get_number(self, api_key: str, country: str,
+                         page_country: str = "") -> PhoneOrder:
         """Reserve a number for OpenAI in the provider's country identifier."""
         raise NotImplementedError
 
