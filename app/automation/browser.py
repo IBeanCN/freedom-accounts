@@ -669,7 +669,9 @@ def get_first_task_page():
 
 def is_managed_session_open(key: str) -> bool:
     sess = _MANUAL_SESSIONS.get(key)
-    return bool(sess and not sess["closer"].done())
+    # A closed browser can leave the holder task alive briefly; expose only
+    # sessions whose Playwright context still has pages.
+    return bool(sess and not sess["closer"].done() and _session_ctx_healthy(sess))
 
 
 async def close_managed_session(key: str) -> bool:
@@ -705,7 +707,7 @@ async def open_managed_browser(fp: dict, browser_mode: str, key: str,
     the plan's last seat — or a same-key zombie exists — it is closed
     automatically so the new window opens without manual cleanup.
     """
-    if is_managed_session_open(key) and _session_ctx_healthy(_MANUAL_SESSIONS[key]):
+    if is_managed_session_open(key):
         return {"ok": True, "reused": True}
 
     # Pre-flight: if the plan's seats are full (our own manual window counts),

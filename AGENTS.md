@@ -67,7 +67,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | GET | `/api/auth/me` | 当前用户（未登录返回 401） |
 | POST | `/api/auth/change-password` | 修改管理员密码 |
 | GET | `/api/meta` | 注册表下发：`login_types`（流程适配器）/ `group_types`（平台注册表），驱动前端下拉 |
-| GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理、`phone_platform` 分组级接码平台，空值跟随系统设置） |
+| GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理、`phone_platform` 分组级接码平台，空值跟随系统设置；列表附带 `browser_open` 分组常驻浏览器状态） |
 | PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`）/ 删除分组 |
 | POST | `/api/groups/{id}/start` | 分组一键执行；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且入队上游状态 `error` 或无上游账号 ID 的本地手动启用账号。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/groups/{id}/open-browser` | 打开常驻交互浏览器（本地 SDK 引擎专用：配置了 `cloak_cdp_url` 时 409 拒绝）。用分组指纹模板（无模板则全随机，seed 必随机）+ 分组代理、有头模式；按组幂等（`reused:true` 表示复用已开窗口），不自动关闭，`/close-browser` 或服务停止时关闭 |

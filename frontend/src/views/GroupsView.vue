@@ -40,8 +40,16 @@
         <div class="group-actions" @click.stop>
           <el-button size="small" type="primary" @click="groupAction(group, 'start')">一键执行</el-button>
           <template v-if="appStore.localEngine">
-            <el-button size="small" @click="groupAction(group, 'open-browser')">打开浏览器</el-button>
-            <el-button size="small" @click="groupAction(group, 'close-browser')">关闭浏览器</el-button>
+            <el-button
+              v-if="group.browser_open"
+              size="small"
+              @click="groupAction(group, 'close-browser')"
+            >关闭浏览器</el-button>
+            <el-button
+              v-else
+              size="small"
+              @click="groupAction(group, 'open-browser')"
+            >打开浏览器</el-button>
           </template>
           <el-button size="small" @click="groupAction(group, 'sync')">同步账号</el-button>
           <el-button

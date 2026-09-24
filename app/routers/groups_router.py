@@ -254,6 +254,8 @@ def _row_dict(r) -> dict:
 
 @router.get("")
 async def list_groups():
+    from ..automation import browser as browser_mod
+
     db = await database.get_db()
     rows = await db.execute(
         """SELECT g.*,
@@ -264,7 +266,13 @@ async def list_groups():
                   (SELECT p.city     FROM proxies p WHERE p.id=g.proxy_id) AS proxy_city,
                   (SELECT p.locale   FROM proxies p WHERE p.id=g.proxy_id) AS proxy_locale
            FROM groups g ORDER BY g.id DESC""")
-    return {"groups": [_row_dict(r) for r in await rows.fetchall()]}
+    groups = []
+    for row in await rows.fetchall():
+        item = _row_dict(row)
+        item["browser_open"] = browser_mod.is_managed_session_open(
+            _manual_session_key(row["id"]))
+        groups.append(item)
+    return {"groups": groups}
 
 
 @router.get("/{group_id}")

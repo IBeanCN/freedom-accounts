@@ -181,9 +181,10 @@ export const appStore = reactive({
       ElMessage.success(data.queued ? `已入队 ${data.queued} 个账号任务` : '已触发调度')
       setTimeout(() => this.loadGroups(), 1200)
     } else if (action === 'open-browser') {
+      await this.loadGroups()
       ElMessage.success(data.reused ? `分组 ${group.name} 的浏览器已打开（复用现有窗口）` : `已为分组 ${group.name} 打开浏览器`)
-      setTimeout(() => this.loadGroups(), 800)
     } else if (action === 'close-browser') {
+      await this.loadGroups()
       ElMessage.success(data.closed ? `分组 ${group.name} 的浏览器已关闭` : `分组 ${group.name} 没有打开的浏览器`)
     }
     return data
