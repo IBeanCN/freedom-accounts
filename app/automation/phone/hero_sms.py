@@ -13,6 +13,8 @@ NUMBER_RETRY_SECONDS = 3
 # HeroSMS's legacy API code for its OpenAI/ChatGPT service; visible in the
 # website asset path as dr0.webp while the public page slug is "chatgpt".
 SERVICE = "dr"
+# Temporary switch for browser-selection QA; no provider order is reserved.
+MOCK_GET_NUMBER = True
 
 
 class HeroSmsAdapter(PhoneProviderAdapter):
@@ -64,6 +66,10 @@ class HeroSmsAdapter(PhoneProviderAdapter):
         country_code = country.strip()
         if not country_code:
             raise RuntimeError("HeroSMS 取号缺少国家 ID")
+        if MOCK_GET_NUMBER:
+            await asyncio.sleep(0.2)
+            return PhoneOrder(phone="525500000000",
+                              provider_order_id=f"mock-{country_code}")
         for attempt in range(1, NUMBER_ATTEMPTS + 1):
             resp = await self._api(
                 api_key, action="getNumber", service=SERVICE,
@@ -91,6 +97,8 @@ class HeroSmsAdapter(PhoneProviderAdapter):
     async def get_code(self, api_key: str, order: PhoneOrder) -> str:
         if not order.provider_order_id:
             raise RuntimeError("HeroSMS 查询验证码缺少激活 ID")
+        if order.provider_order_id.startswith("mock-"):
+            return ""
         resp = await self._api(
             api_key, action="getStatus", id=order.provider_order_id)
         if resp.startswith("STATUS_OK:"):
@@ -109,6 +117,8 @@ class HeroSmsAdapter(PhoneProviderAdapter):
     async def confirm_received(self, api_key: str, order: PhoneOrder) -> None:
         if not order.provider_order_id:
             raise RuntimeError("HeroSMS 确认接收缺少激活 ID")
+        if order.provider_order_id.startswith("mock-"):
+            return
         resp = await self._api(
             api_key, action="setStatus", id=order.provider_order_id, status=6)
         if resp != "ACCESS_ACTIVATION":
@@ -117,6 +127,8 @@ class HeroSmsAdapter(PhoneProviderAdapter):
     async def cancel_order(self, api_key: str, order: PhoneOrder) -> None:
         if not order.provider_order_id:
             raise RuntimeError("HeroSMS 取消激活缺少激活 ID")
+        if order.provider_order_id.startswith("mock-"):
+            return
         resp = await self._api(
             api_key, action="setStatus", id=order.provider_order_id, status=8)
         if resp != "ACCESS_CANCEL":

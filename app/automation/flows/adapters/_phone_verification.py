@@ -72,6 +72,18 @@ async def _country_trigger_label(page) -> str:
     return " ".join(value for value in values if value).strip()
 
 
+async def _click_locator_center(page, locator) -> None:
+    """Click by coordinates; SDK does not support locator hover/nth resolvers."""
+    box = await locator.first.bounding_box()
+    if not box:
+        raise RuntimeError("无法获取页面控件位置")
+    x = box["x"] + box["width"] / 2
+    y = box["y"] + box["height"] / 2
+    await page.mouse.move(x, y)
+    await asyncio.sleep(0.15)
+    await page.mouse.click(x, y)
+
+
 def _country_label_matches(label: str, code: str) -> bool:
     normalized = (label or "").strip().lower()
     info = country_by_iso2(code)
@@ -127,6 +139,97 @@ async def _stable_option_box(page, option):
     return box
 
 
+async def _scroll_option_into_view(page, option, options, code: str,
+                                   listbox, box):
+    """Center the target option using wheel events before resolving a point."""
+    info = country_by_iso2(code)
+    dial_code = info["dial_code"] if info else ""
+    wheel_tried = False
+    for _ in range(12):
+        lb_box = await listbox.first.bounding_box()
+        if not lb_box:
+            return None
+        option_y = box["y"] + box["height"] / 2
+        viewport_top = lb_box["y"]
+        viewport_bottom = lb_box["y"] + lb_box["height"]
+        if viewport_top + 4 <= option_y <= viewport_bottom - 4:
+            return option, await _stable_option_box(page, option)
+
+        if not wheel_tried:
+            # Positive wheel moves lower items upward; center the option
+            # before hit-testing. One predictable gesture is enough because
+            # the fallback below handles virtualization quirks.
+            delta = max(-SCROLL_STEP, min(
+                SCROLL_STEP,
+                option_y - (viewport_top + viewport_bottom) / 2))
+            await page.mouse.move(
+                lb_box["x"] + lb_box["width"] / 2,
+                lb_box["y"] + lb_box["height"] / 2)
+            await page.mouse.wheel(0, delta)
+            wheel_tried = True
+        else:
+            # The virtualized list may keep the old absolute offset after a
+            # wheel event. Position the rendered option directly, then click
+            # it with the mouse below.
+            scrolled = await page.evaluate(
+                """dial => {
+                    const options = [...document.querySelectorAll(
+                        'div[role="option"]')];
+                    const option = options.find(item =>
+                        item.textContent.includes(`(+${dial})`));
+                    const listbox = option?.closest('[role="listbox"]');
+                    if (!option || !listbox) return false;
+                    listbox.scrollTop = option.offsetTop
+                        - listbox.clientHeight / 2 + option.offsetHeight / 2;
+                    return true;
+                }""",
+                dial_code)
+            if not scrolled:
+                return None
+        # Virtualized rows are remounted asynchronously after scrollTop moves.
+        await asyncio.sleep(0.25)
+        # The list is virtualized: after scrolling, the prior nth locator can
+        # point to a different option. Re-resolve the target text.
+        option = await _find_visible_country_option(page, options, code)
+        if option is None:
+            return None
+        box = await _stable_option_box(page, option)
+        if not box:
+            return None
+    return option, box
+
+
+async def _select_visible_country_option(page, options, code: str,
+                                         listbox, steps: list) -> bool:
+    """Select the target if it is currently visible in the dropdown."""
+    option = await _find_visible_country_option(page, options, code)
+    if option is None:
+        return False
+
+    # Do not use locator.hover(): the SDK resolver rejects the humanized nth
+    # locator. Resolve the current box first, center it with wheel events,
+    # then click by page coordinates.
+    box = await _stable_option_box(page, option)
+    if not box:
+        return False
+
+    scrolled = await _scroll_option_into_view(
+        page, option, options, code, listbox, box)
+    if not scrolled:
+        return False
+    option, box = scrolled
+
+    click_point = await _option_hit_test(
+        page, option, box, SEL_COUNTRY_OPTION)
+    if not isinstance(click_point, dict) or "x" not in click_point:
+        raise RuntimeError(
+            f"国家选项 {code} 被其他元素遮挡: {click_point}; box={box}")
+
+    await page.mouse.move(click_point["x"], click_point["y"])
+    await page.mouse.click(click_point["x"], click_point["y"])
+    return await _confirm_country(page, code, option, steps)
+
+
 async def _option_hit_test(page, option, box, selector: str) -> object:
     """Return the actual element at a candidate point, preferring an option hit."""
     candidates = ((0.5, 0.5), (0.5, 0.3), (0.5, 0.7),
@@ -166,12 +269,12 @@ async def _confirm_country(page, code: str, option, steps: list) -> bool:
 
 
 async def _pick_country(page, code: str, steps: list) -> None:
-    """Wheel-search both directions, hover the option, then mouse-click it."""
+    """Wheel-search both directions, then mouse-click the target option."""
     trigger = page.locator(SEL_COUNTRY_TRIGGER)
     if await trigger.count() == 0:
         raise RuntimeError("未找到区号选择器 button[aria-haspopup=listbox]")
 
-    await trigger.first.click()
+    await _click_locator_center(page, trigger)
     await asyncio.sleep(1)
 
     listbox = page.locator('[role="listbox"]')
@@ -192,47 +295,30 @@ async def _pick_country(page, code: str, steps: list) -> None:
     await asyncio.sleep(0.3)
 
     options = page.locator(SEL_COUNTRY_OPTION)
-    # React Aria opens around the selected country. The target can therefore
-    # be above it (MX while US is selected), below it, or already visible.
-    for direction in (0, -1, 1):
+    # React Aria opens around the selected country, so scan the initial
+    # viewport once. If absent, wheel-search both directions instead of
+    # idling in a direction that never scrolls.
+    if await _select_visible_country_option(
+            page, options, code, listbox, steps):
+        return
+
+    for direction in (-1, 1):
         idle_rounds = 0
         for _ in range(SCROLL_MAX_ROUNDS):
-            option = await _find_visible_country_option(page, options, code)
-            if option is not None:
-                # hover() scrolls the option into the viewport. Resolve and
-                # click immediately afterwards: OpenAI's listbox can scroll
-                # back while locator click runs its second actionability pass.
-                await option.first.hover()
-                await asyncio.sleep(0.15)
-                box = await _stable_option_box(page, option)
-                if not box:
-                    break
-
-                click_point = await _option_hit_test(
-                    page, option, box, SEL_COUNTRY_OPTION)
-                if not isinstance(click_point, dict) or "x" not in click_point:
-                    raise RuntimeError(f"国家选项 {code} 被其他元素遮挡: {click_point}")
-
-                await page.mouse.move(click_point["x"], click_point["y"])
-                await page.mouse.click(click_point["x"], click_point["y"])
-                if await _confirm_country(page, code, option, steps):
-                    return
+            before = await page.evaluate(
+                "selector => document.querySelector(selector)?.scrollTop ?? 0",
+                '[role="listbox"]')
+            await page.mouse.wheel(0, SCROLL_STEP * direction)
+            await asyncio.sleep(0.35)
+            after = await page.evaluate(
+                "selector => document.querySelector(selector)?.scrollTop ?? 0",
+                '[role="listbox"]')
+            idle_rounds = idle_rounds + 1 if after == before else 0
+            if idle_rounds >= 2:
                 break
-
-            if direction:
-                before = await page.evaluate(
-                    "selector => document.querySelector(selector)?.scrollTop ?? 0",
-                    '[role="listbox"]')
-                await page.mouse.wheel(0, SCROLL_STEP * direction)
-                await asyncio.sleep(0.35)
-                after = await page.evaluate(
-                    "selector => document.querySelector(selector)?.scrollTop ?? 0",
-                    '[role="listbox"]')
-                idle_rounds = idle_rounds + 1 if after == before else 0
-                if idle_rounds >= 2:
-                    break
-            else:
-                await asyncio.sleep(0.35)
+            if await _select_visible_country_option(
+                    page, options, code, listbox, steps):
+                return
 
     if await listbox.count():
         await page.keyboard.press("Escape")
@@ -280,8 +366,10 @@ async def _cancel_order_safely(adapter: PhoneProviderAdapter, api_key: str,
         await adapter.cancel_order(api_key, order)
         _step(steps, "phone_verification_order_cancelled", reason)
     except Exception as e:
+        # HTTP client errors include the request URL; never persist the key.
+        detail = str(e).replace(api_key, "***") if api_key else str(e)
         _step(steps, "phone_verification_order_cancel_failed",
-              f"{reason}失败: {e}", ok=False)
+              f"{reason}失败: {detail}", ok=False)
 
 
 async def _page_error_reason(page) -> str:
@@ -325,6 +413,10 @@ async def provider_phone_verification(page, email: str, steps: list, *,
     if not country.strip() or not page_country:
         raise RuntimeError("接码配置缺少平台国家 ID 或页面国家编码")
 
+    # Reserve a provider order only after the page has accepted the requested
+    # country. Otherwise a country-selection failure would strand an order.
+    await _pick_country(page, page_country, steps)
+
     for attempt in range(1, PHONE_NUMBER_ATTEMPTS + 1):
         order = await adapter.get_number(api_key, country)
         code_submitted = False
@@ -336,8 +428,6 @@ async def provider_phone_verification(page, email: str, steps: list, *,
               f"订单 {order.provider_order_id}")
 
         try:
-            await _pick_country(page, page_country, steps)
-
             if not await _fill_first(page, SEL_PHONE_TEL, phone, attempts=10):
                 raise RuntimeError("未找到手机号输入框 input#tel")
             tel_value = await page.locator(SEL_PHONE_TEL).first.input_value()
