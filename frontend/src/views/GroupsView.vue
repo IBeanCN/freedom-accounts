@@ -139,25 +139,27 @@
         <el-table-column label="最近运行" width="130">
           <template #default="{ row }">{{ fmtTime(row.last_run_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
-            <template v-if="row.enabled">
-              <el-button link type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
-              <el-button link :disabled="busy(row)" @click="regenerate(row)">换指纹</el-button>
-              <el-button link :disabled="busy(row)" @click="refresh(row)">{{ tokenLabel(row) }}</el-button>
-              <el-button
-                v-if="isChecking(row)"
-                link
-                :disabled="appStore.fpStopPending.has(`a${row.id}`)"
-                @click="appStore.stopAccountFingerprintCheck(row)"
-              >{{ appStore.fpStopPending.has(`a${row.id}`) ? '停止中…' : '停止检测' }}</el-button>
-              <el-button v-else link :disabled="busy(row)" @click="check(row)">指纹检测</el-button>
-              <el-button v-if="loginBusy(row)" link type="warning" @click="stop(row)">停止</el-button>
-              <el-button link @click="showLogs(row)">日志</el-button>
-            </template>
-            <el-tag v-else type="warning">已停用</el-tag>
-            <el-button link @click="openAccount(row)">编辑</el-button>
-            <el-button link type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+            <div class="account-actions">
+              <template v-if="row.enabled">
+                <el-button link type="primary" :disabled="busy(row)" @click="run(row)">{{ runLabel(row) }}</el-button>
+                <el-button link :disabled="busy(row)" @click="regenerate(row)">换指纹</el-button>
+                <el-button link :disabled="busy(row)" @click="refresh(row)">{{ tokenLabel(row) }}</el-button>
+                <el-button
+                  v-if="isChecking(row)"
+                  link
+                  :disabled="appStore.fpStopPending.has(`a${row.id}`)"
+                  @click="appStore.stopAccountFingerprintCheck(row)"
+                >{{ appStore.fpStopPending.has(`a${row.id}`) ? '停止中…' : '停止检测' }}</el-button>
+                <el-button v-else link :disabled="busy(row)" @click="check(row)">指纹检测</el-button>
+                <el-button v-if="loginBusy(row)" link type="warning" @click="stop(row)">停止</el-button>
+                <el-button link @click="showLogs(row)">日志</el-button>
+              </template>
+              <el-tag v-else type="warning">已停用</el-tag>
+              <el-button link @click="openAccount(row)">编辑</el-button>
+              <el-button link type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -466,3 +468,29 @@ async function showLogs(account) {
   showTaskDialog.value = true
 }
 </script>
+
+<style scoped>
+.account-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 8px;
+  align-items: center;
+  justify-items: start;
+}
+
+.account-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.account-actions :deep(.el-button),
+.account-actions :deep(.el-tag) {
+  justify-self: start;
+  min-width: 0;
+}
+
+.account-actions :deep(.el-button) {
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+}
+</style>
