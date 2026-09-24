@@ -13,8 +13,8 @@ NUMBER_RETRY_SECONDS = 3
 # HeroSMS's legacy API code for its OpenAI/ChatGPT service; visible in the
 # website asset path as dr0.webp while the public page slug is "chatgpt".
 SERVICE = "dr"
-# Temporary switch for browser-selection QA; no provider order is reserved.
-MOCK_GET_NUMBER = True
+# QA escape hatch only; must stay false in production so no mock orders run.
+MOCK_GET_NUMBER = False
 
 
 class HeroSmsAdapter(PhoneProviderAdapter):
