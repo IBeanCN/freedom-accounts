@@ -221,15 +221,10 @@ async def manual_phone_verification(page, email: str, steps: list) -> None:
 
 async def _handle_add_phone(page, email: str, steps: list, *, cdp_engine: bool,
                             handler: PhoneVerificationHandler | None = None) -> None:
-    """Cross one OpenAI phone-enrollment gate without touching the page.
-
-    SDK keeps the browser open indefinitely for manual phone/code entry. A
-    handler replaces only that waiting block when automatic phone/SMS support
-    is added later.
-    """
+    """Cross one OpenAI phone-enrollment gate with automation or manual input."""
     if not is_add_phone_url(page.url):
         return
-    if cdp_engine:
+    if cdp_engine and handler is None:
         _step(steps, "phone_verification_unsupported",
               f"CDP 环境检测到 {ADD_PHONE_URL}，终止流程", ok=False)
         raise RuntimeError("CDP 引擎不支持 OpenAI 手机号验证，已终止上号流程")
@@ -244,6 +239,10 @@ async def _handle_add_phone(page, email: str, steps: list, *, cdp_engine: bool,
             raise
         except Exception as e:
             await collect_phone_dom_events(page, steps)
+            if cdp_engine:
+                # There is no operator attached to a remote CDP browser; keep
+                # the failure terminal instead of waiting indefinitely.
+                raise
             # A provider outage must not strand a local headed browser at the
             # gate: the user can finish the same page manually.
             _step(steps, "phone_verification_fallback",

@@ -246,7 +246,7 @@ async function submit() {
       password: form.password,
       totp_secret: trimTotpTail(form.totp_secret),
     }
-    if (!body.password) throw new Error('密码不能为空')
+    if (!props.editing && !body.password) throw new Error('创建账号时密码不能为空')
     if (props.editing) {
       const changed = fpChangedFields(props.editing.fingerprint || {}, body.fingerprint)
       if (changed.length) {
