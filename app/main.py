@@ -18,7 +18,7 @@ from .routers import auth_router, groups_router, accounts_router, system_router,
 WEB_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 

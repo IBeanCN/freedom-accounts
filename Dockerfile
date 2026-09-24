@@ -28,4 +28,4 @@ RUN mkdir -p data logs browser_profiles
 EXPOSE 8000
 
 # 容器内必须监听 0.0.0.0，宿主机访问才可通过端口映射进入。
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
