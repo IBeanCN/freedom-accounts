@@ -52,7 +52,7 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
 import { Hide, View } from '@element-plus/icons-vue'
 import { api } from '@/api/client'
 import { appStore } from '@/stores/app'

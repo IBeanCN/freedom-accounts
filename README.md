@@ -19,10 +19,9 @@
 
 ```bash
 cd freedom-accounts
-./run.sh            # 首次运行自动创建 venv 并安装依赖
-# 生产模式默认 http://127.0.0.1:10008  管理员用户名由 FA_ADMIN_USER 控制（默认 admin）
-./run.sh --dev      # 后端 http://127.0.0.1:8000，前端 HMR http://127.0.0.1:5173
-FA_PORT=8001 FRONTEND_PORT=5174 ./run.sh --dev
+./run.sh            # 开发模式；后端 http://127.0.0.1:8000，前端 HMR http://127.0.0.1:5173
+FA_PORT=8001 FRONTEND_PORT=5174 ./run.sh
+./run.sh --prod     # 构建前端并由 FastAPI 托管，默认 http://127.0.0.1:10008
 ```
 
 手动方式：

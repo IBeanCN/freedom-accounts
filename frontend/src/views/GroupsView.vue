@@ -176,7 +176,8 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { ArrowDown, ArrowUp, Plus } from '@element-plus/icons-vue'
 import GroupFormDialog from '@/dialogs/GroupFormDialog.vue'
 import AccountFormDialog from '@/dialogs/AccountFormDialog.vue'

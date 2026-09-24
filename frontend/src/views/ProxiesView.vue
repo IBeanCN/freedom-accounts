@@ -59,7 +59,8 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { Delete, Edit, Plus, Promotion } from '@element-plus/icons-vue'
 import ProxyFormDialog from '@/dialogs/ProxyFormDialog.vue'
 import { appStore } from '@/stores/app'

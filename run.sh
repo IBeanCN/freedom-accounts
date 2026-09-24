@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-mode="${1:---prod}"
+mode="${1:---dev}"
 
 case "$mode" in
   -d|--dev)
@@ -14,8 +14,8 @@ case "$mode" in
     ;;
   -h|--help)
     echo "Usage: ./run.sh [--dev|--prod]"
-    echo "  --dev  Start FastAPI and the Vite dev server for frontend development."
-    echo "  --prod Build frontend/dist and serve it from FastAPI (default)."
+    echo "  --dev  Start FastAPI and the Vite dev server for frontend development (default)."
+    echo "  --prod Build frontend/dist and serve it from FastAPI."
     exit 0
     ;;
   --prod)

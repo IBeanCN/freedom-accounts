@@ -79,7 +79,8 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import FingerprintFields from '@/components/FingerprintFields.vue'
 import { api } from '@/api/client'
 import { appStore } from '@/stores/app'
