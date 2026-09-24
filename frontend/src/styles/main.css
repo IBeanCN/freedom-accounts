@@ -82,17 +82,30 @@ body {
   display: flex;
   gap: 10px;
   align-items: center;
+  min-width: 0;
   padding: 4px 8px 20px;
 }
 
 .rail-mark {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
+  aspect-ratio: 1;
   width: 36px;
-  height: 36px;
   color: #fff;
   border-radius: 8px;
   background: var(--fa-brand);
+}
+
+.rail-mark svg {
+  width: 20px;
+  aspect-ratio: 1;
+}
+
+.rail-brand > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
 }
 
 .rail-name,
@@ -100,10 +113,26 @@ body {
   font-weight: 650;
 }
 
+.rail-name {
+  overflow: hidden;
+  font-size: 16px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rail-sub,
 .section-hint,
 .cell-sub {
   color: var(--fa-muted);
+}
+
+.rail-sub {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rail-nav {

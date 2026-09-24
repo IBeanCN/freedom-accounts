@@ -2,10 +2,17 @@
   <aside class="side-rail">
     <div class="rail-brand">
       <span class="rail-mark">
-        <el-icon :size="20"><Cpu /></el-icon>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 3l7 2.6v5.9c0 4.4-2.9 7.5-7 9.2-4.1-1.7-7-4.8-7-9.2V5.6L12 3Z"
+            stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"
+          />
+          <circle cx="12" cy="10.7" r="2.1" fill="currentColor" />
+          <path d="M12 12.8v3.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
       </span>
       <span>
-        <span class="rail-name">freedom-accounts</span>
+        <span class="rail-name">Freedom Accounts</span>
         <span class="rail-sub">账号任务平台</span>
       </span>
     </div>
