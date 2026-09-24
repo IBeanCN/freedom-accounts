@@ -258,7 +258,7 @@ onMounted(async () => {
   const initialGroup = hasCurrentGroup ? appStore.currentGroup : appStore.groups[0]?.id
   if (initialGroup) {
     appStore.expandedGroups.add(String(initialGroup))
-    await appStore.loadAccounts(initialGroup)
+    await appStore.selectGroup(initialGroup)
   }
 })
 
@@ -449,12 +449,12 @@ function openAccount(account = null) {
   showAccountForm.value = true
 }
 
-async function accountGuard(account, message) {
+async function accountGuard(account, message, { allowBusy = false } = {}) {
   if (!account.enabled) {
     ElMessage.error('账号已停用，仅允许编辑/删除')
     return false
   }
-  if (busy(account)) {
+  if (!allowBusy && busy(account)) {
     ElMessage.error('账号正在运行或排队，请稍后再试')
     return false
   }
@@ -487,7 +487,7 @@ async function stop(account) {
     title: `停止任务：${account.username}`,
     message: queued ? '该账号仍在队列中，停止后会直接从队列移除。' : '该账号任务正在执行，停止后会中断后续流程并关闭指纹浏览器。',
     ok: '停止',
-  })) return
+  }, { allowBusy: true })) return
   await appStore.stopAccount(account)
 }
 

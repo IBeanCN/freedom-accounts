@@ -506,6 +506,35 @@ async def shutdown() -> None:
         await asyncio.gather(*dispatchers, *_RUN_TASKS, return_exceptions=True)
 
 
+async def _reconcile_stale_run(db, account_id: int) -> str:
+    """Align a busy account marker with its finished task before stop returns.
+
+    This is a stop-time recovery path for an executor whose in-memory state is
+    already gone; normal completion still owns the authoritative account update.
+    """
+    row = await db.execute(
+        """SELECT t.status AS task_status, t.error AS task_error
+           FROM accounts a LEFT JOIN tasks t ON t.id=a.last_task_id
+           WHERE a.id=?""", (account_id,))
+    task = await row.fetchone()
+    if task is None:
+        return "not_running"
+
+    task_status = task["task_status"]
+    terminal_statuses = {"success", "failed", "cancelled", "callback_failed"}
+    if task_status not in terminal_statuses and task_status is not None:
+        return "not_running"
+
+    status = "failed" if task_status in (None, "callback_failed") else task_status
+    message = task["task_error"] or ("已手动停止" if status == "cancelled" else "任务已结束")
+    await db.execute(
+        """UPDATE accounts SET last_status=?, last_message=?
+           WHERE id=? AND last_status IN ('queued','running')""",
+        (status, str(message)[:300], account_id))
+    await db.commit()
+    return "stale_recovered"
+
+
 async def stop_account(account_id: int) -> str:
     """Gracefully remove queued work or cancel the live login run.
 
@@ -517,7 +546,8 @@ async def stop_account(account_id: int) -> str:
         execute_task = _EXECUTE_TASK_BY_ACCOUNT.get(account_id)
         is_queued = account_id in _account_slots and account_id not in _running_accounts
         if not is_queued and task is None:
-            return "not_running"
+            db = await database.get_db()
+            return await _reconcile_stale_run(db, account_id)
         _stop_requests.add(account_id)
 
     cancel_task = execute_task or task
