@@ -253,7 +253,13 @@ const deleteDisabled = computed(() => !selectedRows.value.length || selectedBusy
 
 onMounted(async () => {
   await appStore.loadGroups()
-  if (appStore.currentGroup) await appStore.loadAccounts(appStore.currentGroup)
+  const hasCurrentGroup = appStore.currentGroup
+    && appStore.groups.some(group => String(group.id) === String(appStore.currentGroup))
+  const initialGroup = hasCurrentGroup ? appStore.currentGroup : appStore.groups[0]?.id
+  if (initialGroup) {
+    appStore.expandedGroups.add(String(initialGroup))
+    await appStore.loadAccounts(initialGroup)
+  }
 })
 
 watch(() => appStore.accounts, async () => {

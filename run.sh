@@ -1,7 +1,57 @@
 #!/usr/bin/env bash
 # freedom-accounts launcher
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+stop_existing_processes() {
+  local pid
+  local pids=()
+  local candidates
+
+  # Exact backend module plus this repo's Vite binary avoid killing unrelated
+  # Node/Python services that happen to listen on the same ports.
+  candidates="$(pgrep -f 'uvicorn app\.main:app' || true)"
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    pids+=("$pid")
+  done <<< "$candidates"
+
+  candidates="$(pgrep -f "$ROOT/frontend/node_modules/(\\.bin/vite|vite/bin/vite\\.js)" || true)"
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    pids+=("$pid")
+  done <<< "$candidates"
+
+  if [ "${#pids[@]}" -eq 0 ]; then
+    return
+  fi
+
+  echo "[*] stopping existing freedom-accounts processes..."
+  for pid in "${pids[@]}"; do
+    printf '    PID %s: %s\n' "$pid" "$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    kill "$pid" 2>/dev/null || true
+  done
+
+  local remaining=()
+  for _ in {1..20}; do
+    remaining=()
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    [ "${#remaining[@]}" -eq 0 ] && break
+    sleep 0.2
+  done
+
+  if [ "${#remaining[@]}" -gt 0 ]; then
+    echo "[*] force stopping unresponsive processes..."
+    kill -9 "${remaining[@]}" 2>/dev/null || true
+  fi
+}
+
+stop_existing_processes
 
 mode="${1:---dev}"
 

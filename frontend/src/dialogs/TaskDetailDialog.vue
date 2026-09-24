@@ -35,6 +35,34 @@
           <div class="detail-item"><span class="detail-key">开始时间</span><span class="detail-val">{{ fmtTime(task.started_at) }}</span></div>
           <div class="detail-item"><span class="detail-key">结束时间</span><span class="detail-val">{{ fmtTime(task.finished_at) }}</span></div>
         </div>
+        <div v-if="taskRunning" class="detail-block">
+          <div class="preview-head">
+            <div class="preview-title">
+              <span class="detail-block-title">实时画面</span>
+              <span v-if="previewUpdatedAt" class="preview-time">{{ previewUpdatedAt }}</span>
+            </div>
+            <div class="preview-actions">
+              <span class="preview-label">自动刷新</span>
+              <el-switch v-model="autoPreview" size="small" />
+              <el-select v-model="previewIntervalSeconds" class="preview-interval" size="small">
+                <el-option
+                  v-for="seconds in PREVIEW_INTERVAL_CHOICES"
+                  :key="seconds"
+                  :label="`${seconds} 秒`"
+                  :value="seconds"
+                />
+              </el-select>
+              <el-button size="small" :loading="previewLoading" @click="refreshPreview">
+                刷新
+              </el-button>
+            </div>
+          </div>
+          <div class="preview-frame">
+            <img v-if="previewImage" :src="previewImage" alt="任务浏览器画面" />
+            <div v-else class="preview-empty">{{ previewError || '等待浏览器画面...' }}</div>
+          </div>
+          <p v-if="previewUrl" class="preview-meta">{{ previewUrl }}</p>
+        </div>
         <div v-if="task.error" class="detail-block">
           <span class="detail-block-title">错误信息</span>
           <pre class="detail-response">{{ task.error }}</pre>
@@ -85,7 +113,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { fmtStepTime, fmtTime, modeText, safeJson, isEmpty } from '@/utils/format'
 import { statusMeta, taskStatusMeta } from '@/utils/status'
@@ -111,6 +139,16 @@ const task = ref(null)
 const steps = ref([])
 const result = ref(null)
 const selectedTask = ref(null)
+const previewImage = ref('')
+const previewUrl = ref('')
+const previewError = ref('')
+const previewLoading = ref(false)
+const previewUpdatedAt = ref('')
+const autoPreview = ref(true)
+const PREVIEW_INTERVAL_CHOICES = [1, 2, 3, 5]
+const previewIntervalSeconds = ref(2)
+let previewTimer = null
+let previewBusy = false
 
 const STEP_LABELS = {
   auth_url: '获取授权链接',
@@ -166,6 +204,10 @@ const STEP_LABELS = {
 }
 
 const failedStepCount = computed(() => steps.value.filter(step => step.ok === false).length)
+const taskRunning = computed(() => (
+  task.value?.operation === 'login'
+  && ['queued', 'running'].includes(task.value?.status)
+))
 
 const dialogTitle = computed(() => selectedTask.value
   ? `任务 #${selectedTask.value.id} 详情`
@@ -182,12 +224,29 @@ watch(visible, async (open) => {
   task.value = null
   steps.value = []
   result.value = null
+  resetPreview()
+  stopPreviewTimer()
   if (open && !props.history && props.context?.id) await showDetail(props.context)
+})
+
+watch(taskRunning, (running) => {
+  if (running && autoPreview.value && visible.value) startPreviewTimer()
+  else stopPreviewTimer()
+})
+
+watch(autoPreview, (enabled) => {
+  if (enabled && taskRunning.value && visible.value) startPreviewTimer()
+  else stopPreviewTimer()
+})
+
+watch(previewIntervalSeconds, () => {
+  if (autoPreview.value && taskRunning.value && visible.value) startPreviewTimer(true)
 })
 
 async function showDetail(listTask) {
   selectedTask.value = listTask
   loading.value = true
+  resetPreview()
   try {
     const detail = await api.get(`/api/tasks/${listTask.id}`)
     task.value = detail
@@ -195,10 +254,54 @@ async function showDetail(listTask) {
     steps.value = Array.isArray(parsedSteps) ? parsedSteps.map(normalizeStep) : []
     const parsedResult = safeJson(detail.result_json, null)
     result.value = isEmpty(parsedResult) ? null : parsedResult
+    if (taskRunning.value && autoPreview.value) startPreviewTimer()
+    else stopPreviewTimer()
   } finally {
     loading.value = false
   }
 }
+
+function resetPreview() {
+  previewImage.value = ''
+  previewUrl.value = ''
+  previewError.value = ''
+  previewUpdatedAt.value = ''
+}
+
+async function refreshPreview() {
+  if (!selectedTask.value || previewBusy) return
+  previewBusy = true
+  previewLoading.value = true
+  try {
+    const data = await api.get(`/api/tasks/${selectedTask.value.id}/screenshot`)
+    previewImage.value = data.image || ''
+    previewUrl.value = data.url || ''
+    previewError.value = ''
+    previewUpdatedAt.value = new Date().toLocaleTimeString()
+  } catch (error) {
+    previewError.value = error.message || '获取画面失败'
+  } finally {
+    previewBusy = false
+    previewLoading.value = false
+  }
+}
+
+function startPreviewTimer(restart = false) {
+  if (restart) stopPreviewTimer()
+  if (previewTimer || !taskRunning.value) return
+  refreshPreview()
+  previewTimer = setInterval(() => {
+    if (!document.hidden) refreshPreview()
+  }, previewIntervalSeconds.value * 1000)
+}
+
+function stopPreviewTimer() {
+  if (!previewTimer) return
+  clearInterval(previewTimer)
+  previewTimer = null
+}
+
+onBeforeUnmount(stopPreviewTimer)
 
 function normalizeStep(step) {
   if (typeof step === 'string') return { code: step }
@@ -244,6 +347,81 @@ function refresh() {
   justify-content: space-between;
   gap: 12px;
   margin-top: 8px;
+}
+
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview-time {
+  color: var(--fa-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-actions :deep(.el-button) {
+  min-width: 72px;
+  justify-content: center;
+}
+
+.preview-interval {
+  width: 82px;
+}
+
+.preview-label {
+  color: var(--fa-muted);
+  font-size: 12px;
+}
+
+.preview-frame {
+  display: grid;
+  min-height: 180px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+}
+
+.preview-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.preview-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: var(--fa-muted);
+  font-size: 12px;
+  padding: 16px;
+  text-align: center;
+}
+
+.preview-meta {
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--fa-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-step-count {

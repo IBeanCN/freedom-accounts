@@ -674,6 +674,18 @@ def get_first_task_page():
     return None
 
 
+def get_task_page(account_id: int):
+    """Return the live task Page for one account, for read-only previews."""
+    suffix = f"_a{account_id}"
+    for key, sess in list(_TASK_CONTEXTS.items()):
+        if not key.endswith(suffix) or sess.get("closed"):
+            continue
+        ctx = sess.get("ctx")
+        if ctx and getattr(ctx, "pages", None):
+            return ctx.pages[0]
+    return None
+
+
 def is_managed_session_open(key: str) -> bool:
     sess = _MANUAL_SESSIONS.get(key)
     # A closed browser can leave the holder task alive briefly; expose only

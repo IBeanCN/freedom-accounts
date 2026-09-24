@@ -1,4 +1,5 @@
 """Tasks & settings & system routers."""
+import base64
 import ipaddress
 import json
 
@@ -84,6 +85,32 @@ async def get_task(task_id: int, _: None = Depends(require_admin)):
         from fastapi import HTTPException
         raise HTTPException(404, "task not found")
     return dict(t)
+
+
+@router.get("/tasks/{task_id}/screenshot")
+async def get_task_screenshot(task_id: int, _: None = Depends(require_admin)):
+    """Return a low-rate CDP page snapshot for monitoring one login task."""
+    db = await database.get_db()
+    row = await db.execute(
+        "SELECT account_id, status, operation FROM tasks WHERE id=?", (task_id,))
+    task = await row.fetchone()
+    if not task:
+        raise HTTPException(404, "task not found")
+    if task["operation"] != "login" or task["status"] not in ("queued", "running"):
+        raise HTTPException(409, "任务已结束，没有实时画面")
+
+    page = browser_mod.get_task_page(task["account_id"])
+    if page is None:
+        raise HTTPException(404, "浏览器尚未启动或已关闭")
+    try:
+        image = await page.screenshot(type="jpeg", quality=55, timeout=5000)
+    except Exception as e:
+        raise HTTPException(409, f"获取浏览器画面失败: {str(e)[:200]}")
+    return {
+        "ok": True,
+        "url": str(page.url)[:500],
+        "image": "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii"),
+    }
 
 
 # ---------------- settings ----------------

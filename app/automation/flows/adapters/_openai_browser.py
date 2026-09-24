@@ -42,13 +42,24 @@ _PHONE_DOM_OBSERVER_SCRIPT = """() => {
     const state = { events: [], latest: {}, errors: [] };
     window.__faPhoneDom = state;
     const selectors = {
+        email: 'input[type="email"], input[name="email"], input#email',
+        password: 'input[type="password"], input[name="password"], input#password',
         trigger: 'button[aria-haspopup="listbox"], div[data-trigger="Select"]',
         listbox: '[role="listbox"]',
         option: 'div[role="option"]',
+        continue: 'button[data-dd-action-name="Continue"]',
         tel: 'input#tel',
         sms: 'input[type="radio"][value="sms"]',
         code: 'input[name="code"]',
-        error: '[role="alert"], .react-aria-FieldError, [aria-live]',
+        captcha: [
+            'iframe[src*="arkose"]', 'iframe[src*="funcaptcha"]',
+            'iframe[src*="challenge"]', 'iframe[src*="datadome"]',
+            'iframe[title*="verification" i]', 'iframe[title*="challenge" i]',
+        ].join(', '),
+        error: [
+            '[role="alert"]', '.react-aria-FieldError', '[aria-live]',
+            '[data-testid*="error" i]', '[class*="error" i]',
+        ].join(', '),
     };
     const pushErrors = () => {
         const text = [...document.querySelectorAll(selectors.error)]
@@ -68,7 +79,12 @@ _PHONE_DOM_OBSERVER_SCRIPT = """() => {
     const push = (reason) => {
         if (!/(^|\\.)openai\\.com$/.test(location.hostname)) return;
         const path = location.pathname;
-        if (path !== '/add-phone' && path !== '/phone-verification') return;
+        const debugPaths = [
+            '/log-in-or-create-account', '/add-phone', '/phone-verification',
+        ];
+        if (!debugPaths.some(
+            item => path === item || path.startsWith(`${item}/`)
+        )) return;
         const counts = {};
         for (const [name, selector] of Object.entries(selectors)) {
             counts[name] = document.querySelectorAll(selector).length;
@@ -86,6 +102,11 @@ _PHONE_DOM_OBSERVER_SCRIPT = """() => {
             trigger: (trigger?.innerText || trigger?.getAttribute('aria-label') || '').trim(),
             scroll_top: listbox ? listbox.scrollTop : null,
             options,
+            buttons: [...document.querySelectorAll('button')]
+                .filter(item => item.offsetParent !== null)
+                .map(item => (item.innerText || item.getAttribute('aria-label') || '').trim())
+                .filter(Boolean)
+                .slice(0, 20),
         };
         state.latest[path] = event;
         state.events.push(event);
@@ -161,10 +182,12 @@ async def collect_phone_dom_events(page, steps: list) -> None:
         _step(steps, "phone_dom_events", f"读取 DOM 监听失败: {e}", ok=False)
         return
     for event in payload.get("events") or []:
-        _step(steps, "phone_dom_events", json.dumps(event, ensure_ascii=False))
+        _step(steps, "phone_dom_events",
+              json.dumps(event, ensure_ascii=False), limit=8000)
     snapshot = payload.get("latest")
     if snapshot and snapshot not in (payload.get("events") or []):
-        _step(steps, "phone_dom_events", json.dumps(snapshot, ensure_ascii=False))
+        _step(steps, "phone_dom_events",
+              json.dumps(snapshot, ensure_ascii=False), limit=8000)
 
 
 async def drain_phone_dom_errors(page, steps: list) -> list:
@@ -177,8 +200,14 @@ async def drain_phone_dom_errors(page, steps: list) -> list:
         return []
     for error in errors:
         _step(steps, "phone_dom_error",
-              json.dumps(error, ensure_ascii=False), ok=False)
+              json.dumps(error, ensure_ascii=False), ok=False, limit=8000)
     return errors
+
+
+async def collect_login_dom_events(page, steps: list) -> None:
+    """Drain both login-page snapshots and visible error nodes."""
+    await collect_phone_dom_events(page, steps)
+    await drain_phone_dom_errors(page, steps)
 
 
 async def manual_phone_verification(page, email: str, steps: list) -> None:
@@ -253,8 +282,10 @@ def redact_callback_url(callback_url: str) -> str:
         return "***"
 
 
-def _step(steps: list, step: str, detail: str, ok: bool = True) -> None:
-    steps.append({"t": now(), "step": step, "detail": str(detail)[:300], "ok": ok})
+def _step(steps: list, step: str, detail: str, ok: bool = True,
+          limit: int = 300) -> None:
+    steps.append({"t": now(), "step": step,
+                  "detail": str(detail)[:limit], "ok": ok})
 
 
 async def _sleep(min_s: float, max_s: float | None = None) -> None:
@@ -333,12 +364,14 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
                            handler=phone_handler)
     await _sleep(5, 10)
+    await collect_login_dom_events(page, steps)
     if await _fill_first(page, SEL_EMAIL, email):
         await _sleep(3, 8)
         await _click_continue(page)
         _step(steps, "fill_email", email)
     else:
         _step(steps, "fill_email", "未找到邮箱输入框（可能已登录/已是授权页），继续", ok=False)
+    await collect_login_dom_events(page, steps)
 
     await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
                            handler=phone_handler)
@@ -352,6 +385,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
         _step(steps, "fill_password", "***")
     else:
         _step(steps, "fill_password", "未找到密码输入框（可能已登录/无需密码），继续", ok=False)
+    await collect_login_dom_events(page, steps)
 
     await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
                            handler=phone_handler)
@@ -377,6 +411,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
         _step(steps, "fill_2fa", "已填写 TOTP 验证码")
     else:
         _step(steps, "fill_2fa", "无 2FA 输入框，跳过")
+    await collect_login_dom_events(page, steps)
 
     # 6) 持续点 Continue + 等 localhost 回调
     #
@@ -414,6 +449,7 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
             else:
                 await asyncio.sleep(1)
         if not (captured.get("url") or is_localhost(page.url)):
+            await collect_login_dom_events(page, steps)
             _step(steps, "callback_timeout", page.url[:200])
             raise RuntimeError(
                 f"等待 localhost 回调超时（{CALLBACK_WAIT_SECONDS}s），最后页面: {page.url[:200]}")
