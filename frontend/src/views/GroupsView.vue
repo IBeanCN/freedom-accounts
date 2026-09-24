@@ -126,15 +126,15 @@
         <el-table-column label="指纹 / 检测" width="230" sortable :sort-method="sortByFingerprint">
           <template #default="{ row }">
             <div class="fingerprint-cell">
-              <el-tooltip :content="badge(row).tip || badge(row).label" placement="top">
-                <el-tag size="small" :type="badge(row).type === 'primary' ? 'info' : badge(row).type">{{ badge(row).label }}</el-tag>
-              </el-tooltip>
-              <el-tooltip :content="fingerprintSummary(row.fingerprint)" :disabled="!row.fingerprint?.seed" placement="top">
-                <div class="fingerprint-lines">
+              <div class="fingerprint-main">
+                <el-tooltip :content="badge(row).tip || badge(row).label" placement="top">
+                  <el-tag size="small" :type="badge(row).type === 'primary' ? 'info' : badge(row).type">{{ badge(row).label }}</el-tag>
+                </el-tooltip>
+                <el-tooltip :content="fingerprintSummary(row.fingerprint)" :disabled="!row.fingerprint?.seed" placement="top">
                   <span class="ellipsis-cell mono">{{ fingerprintMeta(row.fingerprint).seed }}</span>
-                  <span class="ellipsis-cell cell-sub">{{ fingerprintMeta(row.fingerprint).meta }}</span>
-                </div>
-              </el-tooltip>
+                </el-tooltip>
+              </div>
+              <span class="ellipsis-cell cell-sub">{{ fingerprintMeta(row.fingerprint).meta }}</span>
             </div>
           </template>
         </el-table-column>

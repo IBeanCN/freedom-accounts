@@ -331,9 +331,15 @@ body {
   gap: 6px;
 }
 
-.fingerprint-lines {
-  display: grid;
+.fingerprint-main {
+  display: flex;
   gap: 2px;
+  align-items: center;
+  min-width: 0;
+}
+
+.fingerprint-main .ellipsis-cell {
+  flex: 1;
   min-width: 0;
 }
 
