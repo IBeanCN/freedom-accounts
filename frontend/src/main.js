@@ -58,9 +58,9 @@ for (const component of elementComponents) {
 }
 
 app.directive('loading', ElLoadingDirective)
-app.use(router)
 
 appStore.initAuth().finally(() => {
   if (!window.location.hash) window.location.hash = appStore.authenticated ? '#/groups' : '#/login'
+  app.use(router)
   app.mount('#app')
 })
