@@ -2,6 +2,9 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
+const backendOrigin = process.env.FA_API_ORIGIN
+  || `http://127.0.0.1:${process.env.FA_PORT || 8000}`
+
 export default defineConfig({
   base: '/static/',
   plugins: [vue()],
@@ -12,7 +15,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
+      '/api': backendOrigin,
     },
   },
   build: {
