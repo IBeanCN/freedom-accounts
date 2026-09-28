@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ..core import database
 from ..core import crypto
 from ..automation import scheduler
+from ..automation import browser as browser_mod
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
 from ..automation import token_refresh
@@ -63,6 +64,10 @@ class EnabledBody(BaseModel):
     enabled: bool
 
 
+def _account_session_key(account_id: int) -> str:
+    return f"a{account_id}_manual"
+
+
 @router.get("")
 async def list_accounts(group_id: Optional[int] = None):
     db = await database.get_db()
@@ -96,6 +101,8 @@ async def list_accounts(group_id: Optional[int] = None):
         # upstream status is display-only: translate at the API layer so the
         # frontend renders the value as-is; local `enabled` is independent
         d["remote_status"] = translate_remote_status(d.get("remote_status"))
+        d["browser_open"] = browser_mod.is_managed_session_open(
+            _account_session_key(d["id"]))
         out.append(d)
     return {"accounts": out}
 
@@ -210,6 +217,44 @@ async def delete_account(account_id: int):
     await db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/{account_id}/open-browser")
+async def open_account_browser(account_id: int):
+    """Open a managed interactive browser for one saved account fingerprint."""
+    if await browser_mod.cdp_configured():
+        raise HTTPException(
+            409, "当前使用远程 CDP 引擎（cloakserve），浏览器运行在服务端，无法在本地打开；请在系统设置中清空 CDP 地址后使用本地 SDK 引擎")
+
+    db = await database.get_db()
+    account = await (await db.execute(
+        """SELECT a.*, g.proxy_id AS group_proxy_id
+           FROM accounts a JOIN groups g ON g.id=a.group_id WHERE a.id=?""",
+        (account_id,))).fetchone()
+    if not account:
+        raise HTTPException(404, "account not found")
+    if not account["enabled"]:
+        raise HTTPException(409, "账号已停用，仅允许编辑/删除")
+    _reject_busy(account["last_status"])
+
+    fingerprint = fp_mod.sanitize(account["fingerprint"])
+    proxy_server = await browser_mod.resolve_proxy(
+        account["proxy_id"], account["group_proxy_id"])
+    try:
+        result = await browser_mod.open_managed_browser(
+            fingerprint, "headed", _account_session_key(account_id),
+            proxy_server=proxy_server)
+    except Exception as e:
+        raise HTTPException(500, f"打开浏览器失败: {str(e)[:120]}")
+    return {**result, "proxy": browser_mod.mask_proxy_server(proxy_server)}
+
+
+@router.post("/{account_id}/close-browser")
+async def close_account_browser(account_id: int):
+    """Close one account's managed browser (idempotent)."""
+    closed = await browser_mod.close_managed_session(
+        _account_session_key(account_id))
+    return {"ok": True, "closed": closed}
 
 
 @router.post("/start")

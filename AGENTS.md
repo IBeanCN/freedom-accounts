@@ -77,9 +77,11 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | POST | `/api/groups/{id}/refresh-tokens` | 一键刷新 Token；先同步上游，再按 `account_ids`（空/缺省=全部）筛选启用且上游状态「正常」的账号。批量只处理 Token 已可解析、剩余寿命 ≤30 分钟且非四种运行态的账号，账号间随机间隔 5–20 秒；全局只允许一个 Token 刷新队列，执行过程写入 `operation=token_refresh` 任务日志并回写 `token_refresh_result` / `token_refresh_at` / 新过期时间 |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | POST | `/api/groups/{id}/fp-check/stop` | 停止分组指纹模板检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
-| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
+| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`、`browser_open`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
+| POST | `/api/accounts/{id}/open-browser` | 按账号已保存指纹打开常驻交互浏览器（本地 SDK 引擎专用，CDP 配置时 409 拒绝；停用或运行态账号 409 拒绝）。代理按账号 > 分组解析，有头模式，按账号幂等（`reused:true` 表示复用已开窗口） |
+| POST | `/api/accounts/{id}/close-browser` | 关闭该账号的常驻交互浏览器（无会话时 `closed:false`，幂等） |
 | POST | `/api/accounts/start` | 按账号批量执行任务（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/accounts/{id}/stop` | 优雅停止任务：队列中直接移除；执行中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持账号任务，不支持刷新 Token |
 | POST | `/api/accounts/{id}/refresh-token` | 账号级刷新 Token；要求启用、上游状态「正常」、过期时间可解析且非运行态，忽略批量用的 30 分钟窗口；成功入队后写入 `token_refresh` 任务日志 |
@@ -111,7 +113,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 ### 指纹变更二次确认 + 常驻浏览器（2026-09-21）
 
 - **保存前指纹确认**：`app.js` 的 `confirmFpChange(oldFp, newFp, what)` 对比编辑前后的指纹（分组模板用 `fingerprint_template`，账号用 `fingerprint`），任一字段差异（含增删、`fpNorm` 归一空值/空白）即弹 `confirmDialog` 列出变更字段中文名（`FP_FIELD_LABEL`）。前端把关，后端不加锁。
-- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（键 `g{group_id}_manual`，每键一个），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。前端按钮 `data-act="open-browser"` 默认 `hidden`，`applyOpenBrowserVisibility(cloak_cdp_url)` 在 `loadEngine`/`loadSettings`/CDP 保存后控制显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
+- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。前端按钮 `data-act="open-browser"` 默认 `hidden`，`applyOpenBrowserVisibility(cloak_cdp_url)` 在 `loadEngine`/`loadSettings`/CDP 保存后控制显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
 
 ### 三个已知的响应格式陷阱
 

@@ -389,6 +389,26 @@ export const appStore = reactive({
     await this.loadGroups()
   },
 
+  async openAccountBrowser(account) {
+    const data = await api.post(`/api/accounts/${account.id}/open-browser`, {})
+    await this.loadAccounts(this.currentGroup)
+    await this.loadGroups()
+    ElMessage.success(data.reused
+      ? `账号 ${account.username} 的浏览器已打开（复用现有窗口）`
+      : '已按账号指纹打开浏览器')
+    return data
+  },
+
+  async closeAccountBrowser(account) {
+    const data = await api.post(`/api/accounts/${account.id}/close-browser`, {})
+    await this.loadAccounts(this.currentGroup)
+    await this.loadGroups()
+    ElMessage.success(data.closed
+      ? `账号 ${account.username} 的浏览器已关闭`
+      : `账号 ${account.username} 没有打开的浏览器`)
+    return data
+  },
+
   async batchRegenerateFingerprints(mode, accountIds = this.selectedNumberIds) {
     const groupId = this.currentGroup
     const ids = accountIds.length ? accountIds : this.selectedNumberIds

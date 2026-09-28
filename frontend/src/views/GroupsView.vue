@@ -118,6 +118,14 @@
               <el-tooltip :content="upstreamInfo(row)" placement="top">
                 <span class="ellipsis-cell cell-sub">{{ upstreamInfo(row) }}</span>
               </el-tooltip>
+              <div class="credential-tags">
+                <el-tooltip v-if="!row.has_password" content="未配置密码" placement="top">
+                  <el-tag size="small" effect="plain" type="warning">缺密码</el-tag>
+                </el-tooltip>
+                <el-tooltip v-if="!row.has_totp" content="未配置 2FA" placement="top">
+                  <el-tag size="small" effect="plain" type="warning">缺2FA</el-tag>
+                </el-tooltip>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -141,7 +149,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="浏览器 / 代理" width="130" sortable :sort-method="sortByBrowserProxy">
+        <el-table-column label="浏览器 / 代理" width="160" sortable :sort-method="sortByBrowserProxy">
           <template #default="{ row }">
             <div class="cell-stack">
               <el-tooltip :content="modeText(row.browser_mode)" placement="top">
@@ -168,7 +176,7 @@
             <span class="ellipsis-cell">{{ fmtTime(row.last_run_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="116" fixed="right" class-name="account-actions-column">
+        <el-table-column label="操作" width="150" fixed="right" class-name="account-actions-column">
           <template #default="{ row }">
             <div class="account-actions">
               <template v-if="row.enabled">
@@ -204,6 +212,15 @@
                     <el-dropdown-menu>
                       <el-dropdown-item command="regenerate" :disabled="busy(row)">换指纹</el-dropdown-item>
                       <el-dropdown-item
+                        v-if="appStore.localEngine && row.browser_open"
+                        command="close-browser"
+                      >关浏览器</el-dropdown-item>
+                      <el-dropdown-item
+                        v-else-if="appStore.localEngine"
+                        command="open-browser"
+                        :disabled="busy(row)"
+                      >开浏览器</el-dropdown-item>
+                      <el-dropdown-item
                         v-if="isChecking(row)"
                         command="stop-fingerprint"
                         :disabled="appStore.fpStopPending.has(`a${row.id}`)"
@@ -221,7 +238,6 @@
                 </el-dropdown>
               </template>
               <template v-else>
-                <el-tag type="warning">已停用</el-tag>
                 <el-button link size="small" @click="openAccount(row)">编辑</el-button>
                 <el-button link size="small" type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
               </template>
@@ -409,6 +425,15 @@ function fingerprintMeta(fingerprint) {
   }
 }
 
+async function toggleAccountBrowser(account) {
+  try {
+    if (account.browser_open) await appStore.closeAccountBrowser(account)
+    else await appStore.openAccountBrowser(account)
+  } catch (error) {
+    if (error?.message) ElMessage.error(error.message)
+  }
+}
+
 function upstreamInfo(account) {
   const parts = []
   if (account.remote_id) parts.push(`ID ${account.remote_id}`)
@@ -571,6 +596,9 @@ async function remove(account) {
 
 function accountMenuCommand(command, account) {
   if (command === 'regenerate') return regenerate(account)
+  if (command === 'open-browser' || command === 'close-browser') {
+    return toggleAccountBrowser(account)
+  }
   if (command === 'check') return check(account)
   if (command === 'stop-fingerprint') return appStore.stopAccountFingerprintCheck(account)
   if (command === 'refresh-token') return refresh(account)
@@ -653,6 +681,12 @@ async function changeAccountTasksPage(page) {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.credential-tags {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
 }
 
 :deep(.account-actions-column .cell) {
