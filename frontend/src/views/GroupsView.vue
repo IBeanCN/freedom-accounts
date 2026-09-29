@@ -96,7 +96,7 @@
           <el-button type="danger" plain :disabled="deleteDisabled" @click="deleteSelected">
             {{ selectedRows.length ? `删除（已选 ${selectedRows.length}）` : '删除账号' }}
           </el-button>
-          <el-button text @click="appStore.closeAccounts">收起</el-button>
+          <el-button :icon="Refresh" :loading="refreshingAccounts" @click="refreshAccounts">刷新</el-button>
         </div>
       </div>
 
@@ -122,6 +122,9 @@
                 <el-tooltip v-if="!row.has_password" content="未配置密码" placement="top">
                   <el-tag size="small" effect="plain" type="warning">缺密码</el-tag>
                 </el-tooltip>
+                <el-tooltip v-if="row.remote_status === '错误'" :content="`上游状态：${row.remote_status}`" placement="top">
+                  <el-tag size="small" effect="plain" type="danger">上游错误</el-tag>
+                </el-tooltip>
                 <el-tooltip v-if="!row.has_totp" content="未配置 2FA" placement="top">
                   <el-tag size="small" effect="plain" type="warning">缺2FA</el-tag>
                 </el-tooltip>
@@ -129,9 +132,27 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="上游状态" width="110" prop="remote_status" sortable :sort-method="sortByRemoteStatus">
+        <el-table-column label="重置次数" width="110" sortable :sort-method="sortByResetCredits">
           <template #default="{ row }">
-            <el-tag :type="remoteStatusType(row.remote_status)" effect="plain">{{ row.remote_status || '—' }}</el-tag>
+            <div class="reset-credit-cell">
+              <button
+                class="reset-count"
+                type="button"
+                :disabled="!resetCredits(row).length"
+                @click="showResetCredits(row)"
+              >{{ resetCredits(row).length }}</button>
+              <button
+                class="action-icon"
+                :class="{ 'is-refreshing': refreshingResetCredits.has(row.id) }"
+                type="button"
+                title="刷新重置明细"
+                aria-label="刷新重置明细"
+                :disabled="refreshingResetCredits.has(row.id)"
+                @click="refreshResetCredits(row)"
+              >
+                <el-icon size="14"><Refresh /></el-icon>
+              </button>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="指纹 / 检测" min-width="300" sortable :sort-method="sortByFingerprint">
@@ -266,22 +287,51 @@
       @refresh="loadAccountTasks"
       @page-change="changeAccountTasksPage"
     />
+
+    <el-dialog
+      v-model="showResetCreditsDialog"
+      :title="`重置明细 · ${resetCreditAccount?.username || ''}`"
+      width="min(760px, 100vw)"
+    >
+      <el-table :data="selectedResetCredits" empty-text="暂无重置明细。">
+        <el-table-column label="ID" min-width="280">
+          <template #default="{ row }">
+            <el-tooltip :content="row.id" :disabled="!row.id" placement="top">
+              <span class="ellipsis-cell mono">{{ row.id || '—' }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="过期时间" width="180">
+          <template #default="{ row }">
+            <span>{{ fmtTime(row.expires_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="130">
+          <template #default="{ row }">
+            <span class="ellipsis-cell">{{ row.status || '—' }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="showResetCreditsDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
-import { ArrowDown, ArrowUp, MoreFilled, Plus, VideoPause } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, MoreFilled, Plus, Refresh, VideoPause } from '@element-plus/icons-vue'
 import GroupFormDialog from '@/dialogs/GroupFormDialog.vue'
 import AccountFormDialog from '@/dialogs/AccountFormDialog.vue'
 import BatchFingerprintDialog from '@/dialogs/BatchFingerprintDialog.vue'
 import TaskDetailDialog from '@/dialogs/TaskDetailDialog.vue'
 import { api } from '@/api/client'
 import { appStore, isAccountBusy } from '@/stores/app'
-import { fmtTime, modeText, safeJson } from '@/utils/format'
-import { fpBadgeMeta, fpLevel, remoteStatusType, statusMeta } from '@/utils/status'
+import { fmtTime, modeText } from '@/utils/format'
+import { fpBadgeMeta, fpLevel, statusMeta } from '@/utils/status'
 
 const showGroupForm = ref(false)
 const editingGroup = ref(null)
@@ -294,7 +344,13 @@ const logAccount = ref(null)
 const accountTasksPage = ref(1)
 const accountTasksTotal = ref(0)
 const ACCOUNT_TASKS_PAGE_SIZE = 10
+const RESET_CREDITS_DEBOUNCE_MS = 500
+const refreshingAccounts = ref(false)
 const refreshingTokens = ref(false)
+const refreshingResetCredits = ref(new Set())
+const resetCreditRefreshTimers = ref(new Map())
+const showResetCreditsDialog = ref(false)
+const resetCreditAccount = ref(null)
 const accountTableRef = ref(null)
 
 const selectedRows = ref([])
@@ -453,9 +509,52 @@ function sortByAccount(a, b) {
     || compareSortValues(upstreamInfo(a), upstreamInfo(b))
 }
 
-function sortByRemoteStatus(a, b) {
-  return compareSortValues(a.remote_status, b.remote_status)
+function resetCredits(account) {
+  return Array.isArray(account.reset_credits) ? account.reset_credits : []
+}
+
+const selectedResetCredits = computed(() => resetCredits(resetCreditAccount.value || {}))
+
+function sortByResetCredits(a, b) {
+  return compareSortValues(resetCredits(a).length, resetCredits(b).length)
     || compareSortValues(a.username, b.username)
+}
+
+async function refreshResetCredits(account) {
+  const key = Number(account.id)
+  clearTimeout(resetCreditRefreshTimers.value.get(key))
+  resetCreditRefreshTimers.value.set(key, setTimeout(() => {
+    resetCreditRefreshTimers.value.delete(key)
+    void refreshResetCreditsNow(account)
+  }, RESET_CREDITS_DEBOUNCE_MS))
+}
+
+onBeforeUnmount(() => {
+  resetCreditRefreshTimers.value.forEach((timer) => clearTimeout(timer))
+  resetCreditRefreshTimers.value.clear()
+})
+
+async function refreshResetCreditsNow(account) {
+  if (refreshingResetCredits.value.has(account.id)) return
+  refreshingResetCredits.value.add(account.id)
+  try {
+    const data = await api.post(`/api/accounts/${account.id}/reset-credits`, {})
+    const current = appStore.accounts.find((item) => Number(item.id) === Number(account.id))
+    if (current) current.reset_credits = Array.isArray(data.reset_credits)
+      ? data.reset_credits
+      : []
+    ElMessage.success(`重置明细已刷新（${data.reset_credits?.length || 0}）`)
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    refreshingResetCredits.value.delete(account.id)
+  }
+}
+
+function showResetCredits(account) {
+  if (!resetCredits(account).length) return
+  resetCreditAccount.value = account
+  showResetCreditsDialog.value = true
 }
 
 function sortByFingerprint(a, b) {
@@ -502,6 +601,18 @@ async function startSelected() {
     await appStore.startAccounts(selectedIds.value)
   } catch (error) {
     ElMessage.error(error.message)
+  }
+}
+
+async function refreshAccounts() {
+  if (refreshingAccounts.value || !appStore.currentGroup) return
+  refreshingAccounts.value = true
+  try {
+    await appStore.loadAccounts(appStore.currentGroup)
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    refreshingAccounts.value = false
   }
 }
 
@@ -674,6 +785,55 @@ async function changeAccountTasksPage(page) {
 </script>
 
 <style scoped>
+.reset-credit-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reset-count {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fa-brand);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.reset-count:hover:not(:disabled),
+.reset-count:focus-visible {
+  background: var(--fa-brand-soft);
+}
+
+.reset-count:disabled {
+  color: var(--fa-muted);
+  cursor: default;
+}
+
+.action-icon.is-refreshing {
+  color: var(--fa-brand);
+}
+
+.action-icon.is-refreshing :deep(.el-icon) {
+  animation: reset-credit-refresh 900ms linear infinite;
+}
+
+@keyframes reset-credit-refresh {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.reset-count:focus-visible,
+.reset-credit-cell .action-icon:focus-visible {
+  outline: 2px solid var(--fa-brand);
+  outline-offset: 1px;
+}
+
 .account-actions {
   --row-control-duration: 150ms;
   --row-control-ease: cubic-bezier(0.4, 0, 0.2, 1);

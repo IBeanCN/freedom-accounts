@@ -1,6 +1,6 @@
 """FlowAdapter: one class per login strategy, sync + async flavors.
 
-Besides the login flow itself, an adapter MAY implement five optional
+Besides the login flow itself, an adapter MAY implement six optional
 credential operations:
 
   - list_accounts   远端账号列表
@@ -8,11 +8,12 @@ credential operations:
   - auth_link       获取账号授权链接（OAuth start）
   - redeem_token    兑换账号令牌（OAuth complete）
   - refresh_token   刷新账号令牌
+  - reset_credits   查询账号重置次数与明细
 
 Contract:
   - These operations are adapter capabilities, not adapter HTTP endpoints.
-    They are invoked by internal services; refresh_token is additionally
-    triggered by the account UI API.
+    They are invoked by internal services; refresh_token and reset_credits
+    are additionally triggered by the account UI API.
   - Every call MUST append one row to the `adapter_logs` table via
     `alog.log_action` for auditing.
   - `group` carries the group row: `id`, `login_url` (= upstream base URL),
@@ -69,6 +70,14 @@ class FlowAdapter:
     async def refresh_token(self, group: dict, remote_account_id: str) -> dict:
         """Refresh one upstream account's access token."""
         raise NotImplementedError(f"{self.key} does not implement refresh_token")
+
+    async def get_reset_credits(self, group: dict, remote_account_id: str) -> dict:
+        """Fetch one upstream account's reset count and details.
+
+        Returns {"available_count": int, "credits": [{id, expires_at, status}]}.
+        Status stays as the upstream raw value; this platform does not map it.
+        """
+        raise NotImplementedError(f"{self.key} does not implement get_reset_credits")
 
     @classmethod
     def manifest(cls) -> dict:

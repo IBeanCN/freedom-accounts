@@ -17,8 +17,11 @@ Upstream wire contract (verified against the codex-proxy-rs source):
            body: {"provider":"openai","flowId":<fid>,"callbackUrl":<url>}
   - POST   {base}/api/admin/accounts/refresh                     → data.{account, result?, error?}
            body: {"accountId":<id>}
+  - GET    {base}/api/admin/accounts/reset-credits?accountId=<id>
+           → data.{availableCount, credits[]}
 
-凭证操作会写入 adapter_logs 审计；refresh_token 可由账号页面 API 触发，其余仍为内部调用。
+凭证操作会写入 adapter_logs 审计；refresh_token 与 reset_credits 可由账号页面 API 触发，
+其余仍为内部调用。
 """
 import httpx
 
@@ -270,5 +273,30 @@ class CprAdapter(FlowAdapter):
             return result
         except Exception as e:
             await log_action(group["id"], self.key, "refresh_token", False,
+                             f"accountId={remote_account_id}: {e}")
+            raise
+
+    async def get_reset_credits(self, group: dict, remote_account_id: str) -> dict:
+        try:
+            data = await _api_call(group, "GET", "/api/admin/accounts/reset-credits",
+                                   params={"accountId": remote_account_id})
+            items = data.get("credits") if isinstance(data.get("credits"), list) else []
+            # Persist only the display contract so unrelated upstream fields do
+            # not grow the account row or leak into the UI.
+            result = {
+                "available_count": int(data.get("availableCount") or 0),
+                "credits": [
+                    {"id": str(item.get("id") or ""),
+                     "expires_at": str(item.get("expiresAt") or ""),
+                     "status": str(item.get("status") or "")}
+                    for item in items if isinstance(item, dict)
+                ],
+            }
+            await log_action(group["id"], self.key, "reset_credits", True,
+                             f"accountId={remote_account_id} "
+                             f"availableCount={result['available_count']}")
+            return result
+        except Exception as e:
+            await log_action(group["id"], self.key, "reset_credits", False,
                              f"accountId={remote_account_id}: {e}")
             raise

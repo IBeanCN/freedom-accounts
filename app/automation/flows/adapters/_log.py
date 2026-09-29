@@ -1,7 +1,7 @@
 """Adapter operation logging.
 
 Every adapter credential operation (list_accounts / get_account / auth_link /
-redeem_token / refresh_token) writes exactly one row here. Rows are NOT
+redeem_token / refresh_token / reset_credits) writes exactly one row here. Rows are NOT
 exposed through any HTTP endpoint — they are for internal auditing only and
 are pruned by the retention job (see core/maintenance.py).
 """

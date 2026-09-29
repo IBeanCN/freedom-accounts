@@ -1,31 +1,24 @@
 # AGENTS.md — freedom-accounts 开发约定
 
 > 本文件面向**所有在此仓库上工作的开发者与 AI 编码进程**，是仓库的强制契约入口。
-> 前端（`web/`）的任何改动都必须符合 [`DESIGN.md`](./DESIGN.md)。
-> 本文件是**执行摘要 + 强制流程**，`DESIGN.md` 是**权威详规**；两者冲突时以 `DESIGN.md` 为准。
+> 前端（`frontend/`）的任何改动都必须符合 [`DESIGN.md`](./DESIGN.md)。
+> 本文件是**执行摘要 + 强制流程**，`DESIGN.md` 是**前端权威规范**；两者冲突时以 `DESIGN.md` 为准。
 
 ---
 
 ## 0. 改前端之前，先做这三件事
 
-1. **读规范**：至少读完 `DESIGN.md` 的 §0（怎么用）、§1（设计原则）、§7（组件规范）、§11（接入指南）。
-2. **复用，不发明**：需要按钮 / 徽标 / 表格 / 对话框时，先翻 `DESIGN.md` §7 找现成类名。只有确实不存在的组件才新增到 `web/style.css`，并回写进 `DESIGN.md` §7。
-3. **改完必跑校验**：
+1. **读规范**：读完 [`DESIGN.md`](./DESIGN.md)，重点看架构职责、token、组件和验证。
+2. **先看真实实现**：读目标页面 / 弹窗 / 组件、`stores/app.js` 中对应动作和 `utils/status.js` 中的状态映射。
+3. **复用，不发明**：表格、表单、按钮、标签、下拉、分页、对话框、抽屉、消息和确认框优先使用 Element Plus 现有组件；只有可复用的页面布局和业务控件才补自定义样式。
+
+改完必跑最低校验：
 
 ```bash
-node scripts/design-lint.mjs
+cd frontend && npm run build
 ```
 
-校验输出 **0 ERROR** 才允许提交。这不是建议，是硬门槛。WARN 不阻断，但应逐条判断。
-
-**涉及布局 / 间距 / 卡片结构的改动，还要跑几何校验**（结构断言查不出"卡片高度参差、按钮不贴底"这类问题）：
-
-```bash
-FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占用用户正在跑的 8000
-.venv/bin/python scripts/layout-check.py --base http://127.0.0.1:8123
-```
-
-当前覆盖设置页：同排卡片等高、操作按钮贴底、无水平溢出、无过大空白、≤960px 收成单列。
+布局、交互、状态或明暗模式变化时，用 `npm run dev` 配合后端检查受影响页面。
 
 ---
 
@@ -33,11 +26,11 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 | # | 规则 | 反例 | 正例 |
 | --- | --- | --- | --- |
-| 1 | 业务样式禁止硬编码色值 | `color: #6e6e73` | `color: var(--fa-text-2)` |
-| 2 | 卡片不使用层级阴影，靠 1px 描边 + 底色区分 | `.card { box-shadow: 0 2px 8px … }` | `border: 1px solid var(--fa-hairline)` |
-| 3 | 全站只有一个强调色 | 新开一个蓝 `#0a84ff` | 一律 `var(--fa-accent)` |
+| 1 | 新增自定义业务样式禁止硬编码色值 | `color: #6e6e73` | `color: var(--fa-muted)` |
+| 2 | 自定义卡片不使用层级阴影，靠 1px 描边 + 底色区分 | `.card { box-shadow: 0 2px 8px … }` | `border: 1px solid var(--fa-line)` |
+| 3 | 全站只有一个品牌强调色 | 新开一个蓝 `#0a84ff` | 一律 `var(--fa-brand)` |
 
-> 例外：对话框与 Toast 可用 `--fa-shadow-modal` / `--fa-shadow-toast`；选中态可用 `box-shadow: 0 0 0 1px` 模拟加粗描边（不改变布局尺寸）。详见 `DESIGN.md` §6。
+> Element Plus 自身的组件样式和语义状态色（如 `--el-color-danger`）可直接使用。选中态可用 `box-shadow: 0 0 0 1px var(--fa-brand)` 模拟加粗描边，不改变布局尺寸。
 
 ---
 
@@ -45,20 +38,24 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 | 文件 | 可以改 | 不可以改 |
 | --- | --- | --- |
-| `web/tokens.css` | 新增变量 | 改已有变量的值（等于改全站，需评审） |
-| `web/style.css` | 新增组件类 | 改已有组件类的视觉规格（先查引用点） |
-| `web/index.html` | 自由 | — |
-| `web/app.js` | 自由 | **`/api/*` 路径与请求 / 响应字段** |
-| `scripts/design-lint.mjs` | 扩充规则 | 收紧规则前需先修掉存量问题 |
-| `scripts/layout-check.py` | 扩充断言、加页面 | 放宽阈值（阈值就是规范本身） |
+| `frontend/index.html` | 应用入口配置 | 生产脚本路径和根容器结构 |
+| `frontend/src/main.js` | 注册新 Element Plus 组件 | 改全局引入顺序和 dark CSS vars 加载 |
+| `frontend/src/styles/main.css` | 全局 token、布局和少量共享类 | 顺手重构已有组件类；改 token 前先查引用 |
+| `frontend/src/views/` | 路由页面 | 直接裸写 `fetch` |
+| `frontend/src/dialogs/` | 表单、详情和批量弹窗 | 越权复用为无关业务的通用组件 |
+| `frontend/src/components/` | 跨页面业务控件 | 放只属于单页的逻辑 |
+| `frontend/src/stores/app.js` | 共享状态和 `/api/*` 编排 | **`/api/*` 路径与请求 / 响应字段擅自变更** |
+| `frontend/src/utils/status.js` | 状态文字、类型和排序映射 | 在页面里重复硬编码状态映射 |
+| `frontend/dist/` | 由 `npm run build` 生成 | 手工编辑产物 |
 
-引入顺序固定为 `tokens.css` → `style.css`，样式统一挂载在 `/static` 下。**页面不写内联样式。**
+路由使用 hash 模式，生产 base 是 `/static/`。组件局部状态样式写在 `<style scoped>`；
+确需覆盖 Element Plus 内部类时优先限定在组件作用域。
 
 ---
 
 ## 3. 后端契约（冻结）
 
-前端依赖以下接口，**路径与字段均不得改动**。需要扩展时改后端，并同步更新本表、`DESIGN.md` 与 `scripts/design-lint.mjs` 的白名单。
+前端依赖以下接口，**路径与字段均不得改动**。需要扩展时改后端，并同步更新本表和前端调用点。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -77,7 +74,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | POST | `/api/groups/{id}/refresh-tokens` | 一键刷新 Token；先同步上游，再按 `account_ids`（空/缺省=全部）筛选启用且上游状态「正常」的账号。批量只处理 Token 已可解析、剩余寿命 ≤30 分钟且非四种运行态的账号，账号间随机间隔 5–20 秒；全局只允许一个 Token 刷新队列，执行过程写入 `operation=token_refresh` 任务日志并回写 `token_refresh_result` / `token_refresh_at` / 新过期时间 |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | POST | `/api/groups/{id}/fp-check/stop` | 停止分组指纹模板检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
-| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`、`browser_open`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
+| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`、`reset_credits`（反序列化后的重置明细数组；次数由数组长度推导）、`browser_open`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
 | PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/{id}/open-browser` | 按账号已保存指纹打开常驻交互浏览器（本地 SDK 引擎专用，CDP 配置时 409 拒绝；停用或运行态账号 409 拒绝）。代理按账号 > 分组解析，有头模式，按账号幂等（`reused:true` 表示复用已开窗口） |
@@ -85,6 +82,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 | POST | `/api/accounts/start` | 按账号批量执行任务（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/accounts/{id}/stop` | 优雅停止任务：队列中直接移除；执行中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持账号任务，不支持刷新 Token |
 | POST | `/api/accounts/{id}/refresh-token` | 账号级刷新 Token；要求启用、上游状态「正常」、过期时间可解析且非运行态，忽略批量用的 30 分钟窗口；成功入队后写入 `token_refresh` 任务日志 |
+| POST | `/api/accounts/{id}/reset-credits` | 手动刷新重置明细；要求已同步上游 ID。当前仅 CPR 实现适配器查询，返回反序列化后的 `reset_credits`（`id` / `expires_at` / `status`，状态不做映射）并整体落库；不单独存储次数，展示次数由数组长度推导。同步与账号列表轮询不触发上游查询 |
 | POST | `/api/accounts/batch-delete` | 批量删除选中账号；`account_ids` 必填，任一账号处于四种运行态时整批 409 拒绝 |
 | POST | `/api/accounts/{id}/regenerate-fingerprint` | 重新生成指纹；四种运行态账号 409 拒绝 |
 | POST | `/api/accounts/{id}/fp-check` | 触发指纹检测（后台浏览器打开检测站→点 #retest→读 #risk-badge/#score-value，结果写回 `fp_check_result`，形如 高风险/80）；四种运行态账号 409 拒绝；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
@@ -112,8 +110,8 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 ### 指纹变更二次确认 + 常驻浏览器（2026-09-21）
 
-- **保存前指纹确认**：`app.js` 的 `confirmFpChange(oldFp, newFp, what)` 对比编辑前后的指纹（分组模板用 `fingerprint_template`，账号用 `fingerprint`），任一字段差异（含增删、`fpNorm` 归一空值/空白）即弹 `confirmDialog` 列出变更字段中文名（`FP_FIELD_LABEL`）。前端把关，后端不加锁。
-- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。前端按钮 `data-act="open-browser"` 默认 `hidden`，`applyOpenBrowserVisibility(cloak_cdp_url)` 在 `loadEngine`/`loadSettings`/CDP 保存后控制显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
+- **保存前指纹确认**：账号与分组表单在提交前用 `frontend/src/utils/fingerprint.js` 的 `fpChangedFields()` 对比新旧指纹（账号用 `fingerprint`，分组模板用 `fingerprint_template`），任一字段差异即用 `ElMessageBox.confirm` 列出中文变更项（`FP_FIELD_LABEL`）。前端把关，后端不加锁。
+- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。Vue 页面用 `appStore.localEngine` 控制浏览器按钮显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
 
 ### 三个已知的响应格式陷阱
 
@@ -124,7 +122,7 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 ### 回调与适配器约定（2026-09 起）
 
 - 分组不再有「回调地址 / Header JSON」：上游集成全部在**流程适配器内部**完成，不在页面暴露。
-- 适配器可选实现 5 个凭证操作：`list_accounts` / `get_account` / `auth_link` / `redeem_token` / `refresh_token`（见 `flows/adapters/base.py`）。每次调用写 `adapter_logs` 表；当前仅 `refresh_token` 由账号页面 API 触发，其余凭证操作仍仅供同步/任务执行内部调用。
+- 适配器可选实现 6 个凭证操作：`list_accounts` / `get_account` / `auth_link` / `redeem_token` / `refresh_token` / `get_reset_credits`（见 `app/automation/flows/adapters/base.py`）。每次调用写 `adapter_logs` 表；当前 `refresh_token` 与 `get_reset_credits` 由账号页面 API 触发，其余凭证操作仍仅供同步/任务执行内部调用。
 - `groups.callback_url` / `header_json` 为遗留列：数据库保留、接口不再接受、列表不再返回。
 
 ### Token 自动刷新（2026-09-22）
@@ -138,12 +136,12 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，执行任务时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
 
-- **共享浏览器段** `flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps, *, cdp_engine=False, phone_handler=None)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **共享浏览器段** `app/automation/flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps, *, cdp_engine=False, phone_handler=None)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
 - **手机号验证门**：精确匹配 `https://auth.openai.com/add-phone`（忽略 query/hash）。CDP 环境立即终止任务；本地 SDK 保持页面不动、不点 Continue，无限等待用户输入手机号/验证码，URL 离开该页后重置回调等待并继续。自动接码平台统一实现 `automation/phone/base.py` 的 `get_balance` / `get_number` / `get_code` / `confirm_received`，返回规范 `PhoneOrder(phone, provider_order_id)`；注册表在 `automation/phone/registry.py`，当前仅登记 HeroSMS 骨架（底层协议未实现）。系统设置 `phone_verification_mode=auto` 且平台/国家/Key 齐全时，调度器注入 `_phone_verification.provider_phone_verification`；平台不支持、配置缺失或自动执行失败时回退手动。`phone_handler(page, email, steps)` 仍是自动服务的注入点。
 - **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键执行；CPR 请求授权链接时省略 `accountId`。
 - **执行冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。
 - **上游差异只在凭证操作**：
-  - sub2api：`POST {login_url}/api/v1/openai/generate-auth-url {account_id}` → `{session_id, auth_url}`；`POST /openai/exchange-code {code, state, session_id}`（重试 5 次）；成功后 best-effort `recover-state` + `schedulable`。Header `x-api-key`；响应 envelope 宽容解析；账号按 email 匹配、`accounts.remote_id` 优先；`refresh_token` 未实现（上游无端点）。
+  - sub2api：`POST {login_url}/api/v1/openai/generate-auth-url {account_id}` → `{session_id, auth_url}`；`POST /openai/exchange-code {code, state, session_id}`（重试 5 次）；成功后 best-effort `recover-state` + `schedulable`。Header `x-api-key`；响应 envelope 宽容解析；账号按 email 匹配、`accounts.remote_id` 优先；`refresh_token` / `get_reset_credits` 未实现。
   - cpr：`POST /api/admin/accounts/oauth/start` → `{flowId, authorizationUrl}`；`POST /api/admin/accounts/oauth/complete {flowId, callbackUrl}`；见文件头 wire contract。
 - **flow 签名扩展**：`run_flow(..., group=..., account=..., cdp_engine=...)` 把分组/账号行和引擎策略透传给 flow。scheduler 是唯一调用方。
 - `upstream_key`（上游 API Key）必填，缺失时任务/同步均报错提示。sub2api 的 `login_url` 填站点根（自动补 `/api/v1/admin` 前缀，已带则原样）。
@@ -152,14 +150,12 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 ## 4. 新增一个页面 / 区块
 
-`DESIGN.md` §11.2 有可直接复制的骨架代码。标准流程：
+当前使用 Vue Router，不使用旧版 `TAB_META` / `switchTab()` 流程。标准见 `DESIGN.md` §2：
 
-1. `.rail-nav` 内加 `<button class="rail-item" data-tab="reports">`，图标用 16px 内联 SVG。
-2. 该页**有**主操作时，在 `.page-actions` 内加 `<div class="act-set hidden" data-for="reports">` 放该页主操作；没有主操作就不加（分组页即如此，其新建分组的唯一入口挂在标题行 `.section-head`）。
-3. `app.js` 的 `TAB_META` 登记 `reports: { title, sub }`。
-4. `app.js` 的 `switchTab()` 内按需追加 `if (tab === "reports") loadReports();`。
-
-导航高亮、页面显隐、顶栏按钮、标题文案会全部自动生效。
+1. 在 `frontend/src/router/index.js` 添加懒加载路由和 `meta.title` / `meta.sub`。
+2. 在 `frontend/src/components/SideNav.vue` 的 `items` 里登记导航项和 Element Plus 图标。
+3. 在 `frontend/src/views/` 建页面；主操作放在页面自身的 `.panel-head` 右侧。
+4. 跨页面共享请求放 `frontend/src/stores/app.js`，状态文案放 `frontend/src/utils/status.js`。
 
 ---
 
@@ -167,38 +163,33 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 | 要什么 | 用什么 |
 | --- | --- |
-| 页面底色 / 卡片底色 | `--fa-parchment` / `--fa-canvas` |
-| 主文字 / 次级 / 三级 | `--fa-ink` / `--fa-text-2` / `--fa-text-3` |
-| 描边 / 分隔线 | `--fa-hairline` / `--fa-divider`（悬停加深用 `--fa-hairline-strong`） |
-| 强调（按钮、链接、选中） | `--fa-accent`（悬停 `--fa-accent-hover`，浅底 `--fa-accent-soft`） |
-| 成功 / 危险 / 警告 | `--fa-success` / `--fa-danger` / `--fa-warning`（各配 `-soft` 底色） |
-| 正文 / 表格 / 标签 / 徽标 | `--fa-fs-body` / `--fa-fs-table` / `--fa-fs-label` / `--fa-fs-micro` |
-| 间距 | `--fa-space-1`…`--fa-space-7`（4/8/12/16/24/32/48） |
-| 圆角 | `--fa-radius-xs` / `-sm` / `-md` / `-lg` / `-pill` |
-| 控件高度 | `--fa-control-height`（38px） |
+| 页面底色 / 表面 | `--fa-page` / `--fa-surface` |
+| 主文字 / 次级文字 | `--fa-ink` / `--fa-muted` |
+| 描边 | `--fa-line` |
+| 品牌强调 / 浅底 | `--fa-brand` / `--fa-brand-soft` |
+| 成功 / 危险 / 警告 / 中性 | Element Plus 的 `--el-color-success` / `--el-color-danger` / `--el-color-warning` / `--el-color-info` |
 
-完整清单见 `DESIGN.md` §3–§5。
+完整清单见 `DESIGN.md` §3。新增颜色先复用 token 或 Element Plus 语义变量。
 
 ---
 
 ## 6. 业务状态 → 视觉
 
-状态映射集中在 `app.js` 的 `STATUS_MAP` / `CALLBACK_MAP`。**新增状态必须在这两张表登记**，否则会落到灰色兜底。状态一律「颜色 + 文字」双重编码，不靠颜色单独表意。
+状态映射集中在 `frontend/src/utils/status.js` 的 `STATUS_MAP` / `CALLBACK_MAP`。**新增状态必须在这两张表登记**，否则会落到兜底文案。状态一律「颜色 + 文字」双重编码，不靠颜色单独表意。
 
 ---
 
 ## 7. 提交前自检清单
 
-- [ ] `node scripts/design-lint.mjs` 输出 0 ERROR
-- [ ] 动了布局 / 卡片结构时，`scripts/layout-check.py` 全通过
-- [ ] 没有新增硬编码色值、裸 px 字号 / 圆角
-- [ ] 间距引用了 `--fa-space-*`（存量区块可暂缓，新代码不允许）
-- [ ] 设置卡保持三段结构（`.setting-head` / `.setting-body` / `.setting-foot`），按钮收在 `.setting-foot` 内
-- [ ] 新组件已回写进 `DESIGN.md` §7
-- [ ] 明暗两套模式下都看过（顶栏 `#theme-btn` 切换）
-- [ ] ≤960px 断点下导航收成图标条后仍可用
+- [ ] `cd frontend && npm run build` 通过
+- [ ] 没有新增硬编码业务色值；新颜色走 `--fa-*` 或 Element Plus 语义变量
+- [ ] 新状态已登记到 `frontend/src/utils/status.js`
+- [ ] 表格长文本截断、空状态中文文案、加载和错误反馈完整
+- [ ] Element Plus 组件形态与既有页面一致（主操作唯一，行内操作紧凑）
+- [ ] 明暗两套模式下都看过（左侧导航底部切换）
+- [ ] `1100px` / `820px` 断点下没有水平溢出或关键控件不可用
 - [ ] 接口路径与载荷字段未变
-- [ ] 破坏性操作走 `confirmDialog({ danger: true })`，未使用原生 `confirm()`
+- [ ] 破坏性操作走 `ElMessageBox.confirm`，未使用原生 `confirm()`
 
 ---
 
@@ -206,9 +197,8 @@ FA_PORT=8123 .venv/bin/python -m uvicorn app.main:app --port 8123 &   # 勿占�
 
 | 资源 | 位置 |
 | --- | --- |
-| 设计规范（权威） | `DESIGN.md` |
-| 设计变量 | `web/tokens.css` |
-| 组件库 | `web/style.css` |
-| 规范校验器 | `scripts/design-lint.mjs` |
-| 布局几何校验 | `scripts/layout-check.py`（需服务运行中） |
-| 画布设计稿 | <https://ardot.tencent.com/file/728115104293393> |
+| 前端规范（权威） | `DESIGN.md` |
+| 前端入口文档 | `frontend/README.md` |
+| 设计 token 与全局样式 | `frontend/src/styles/main.css` |
+| 状态映射 | `frontend/src/utils/status.js` |
+| 共享状态与 API 编排 | `frontend/src/stores/app.js` |

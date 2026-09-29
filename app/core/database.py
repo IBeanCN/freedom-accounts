@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     token_expires_at TEXT NOT NULL DEFAULT '', -- upstream access token expiry (RFC3339/epoch)
     token_refresh_result TEXT NOT NULL DEFAULT '', -- '' | 队列中 | 刷新中 | 成功... | 失败: ...
     token_refresh_at TEXT,                 -- last refresh attempt timestamp
+    reset_credits TEXT NOT NULL DEFAULT '[]', -- serialized reset-credit details; count derives from array length
     fp_check_result TEXT NOT NULL DEFAULT '', -- fingerprint risk check: '' | 检测中 | 高风险/80 | 失败: ...
     fp_check_at TEXT,                      -- last check timestamp
     remark TEXT NOT NULL DEFAULT '',
@@ -97,7 +98,7 @@ CREATE TABLE IF NOT EXISTS adapter_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER,                      -- groups.id at call time (not FK: groups may be deleted)
     login_type TEXT NOT NULL DEFAULT '',   -- adapter key, e.g. cpr
-    action TEXT NOT NULL,                  -- list_accounts|get_account|auth_link|redeem_token|refresh_token
+    action TEXT NOT NULL,                  -- list_accounts|get_account|auth_link|redeem_token|refresh_token|reset_credits
     ok INTEGER NOT NULL DEFAULT 1,
     detail TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -169,6 +170,9 @@ async def init_db() -> None:
         await db.execute("ALTER TABLE accounts ADD COLUMN token_refresh_result TEXT NOT NULL DEFAULT ''")
     if "token_refresh_at" not in acols:
         await db.execute("ALTER TABLE accounts ADD COLUMN token_refresh_at TEXT")
+    if "reset_credits" not in acols:
+        await db.execute(
+            "ALTER TABLE accounts ADD COLUMN reset_credits TEXT NOT NULL DEFAULT '[]'")
     async with db.execute("PRAGMA table_info(tasks)") as cur:
         tcols = {r[1] for r in await cur.fetchall()}
     if "operation" not in tcols:

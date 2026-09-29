@@ -68,6 +68,15 @@ def _account_session_key(account_id: int) -> str:
     return f"a{account_id}_manual"
 
 
+def _decode_reset_credits(raw) -> list:
+    """Return the API array contract; corrupt stored JSON stays non-fatal."""
+    try:
+        value = json.loads(raw) if raw not in (None, "") else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
 @router.get("")
 async def list_accounts(group_id: Optional[int] = None):
     db = await database.get_db()
@@ -95,6 +104,7 @@ async def list_accounts(group_id: Optional[int] = None):
     for r in await rows.fetchall():
         d = dict(r)
         d["fingerprint"] = fp_mod.sanitize(d.get("fingerprint"))
+        d["reset_credits"] = _decode_reset_credits(d.get("reset_credits"))
         # 凭据只暴露是否存在，用于任务执行前的前端提示；值永不回传前端。
         d["has_password"] = bool(d.pop("password", None))
         d["has_totp"] = bool(d.pop("totp_secret", ""))
@@ -438,6 +448,43 @@ async def refresh_token(account_id: int):
     if not await token_refresh.queue_refresh([account_id]):
         raise HTTPException(409, "已有 Token 刷新队列正在执行，请稍后再试")
     return {"ok": True, "status": "刷新Token队列中"}
+
+
+@router.post("/{account_id}/reset-credits")
+async def refresh_reset_credits(account_id: int):
+    """Refresh stored upstream reset credits; never called during sync or polling."""
+    db = await database.get_db()
+    row = await (await db.execute(
+        """SELECT a.*, g.login_type, g.login_url, g.upstream_key
+           FROM accounts a JOIN groups g ON g.id=a.group_id WHERE a.id=?""",
+        (account_id,))).fetchone()
+    if not row:
+        raise HTTPException(404, "account not found")
+    if not row["enabled"]:
+        raise HTTPException(409, "账号已停用，仅允许编辑/删除")
+    remote_account_id = (row["remote_id"] or "").strip()
+    if not remote_account_id:
+        raise HTTPException(400, "账号缺少上游 ID，请先同步账号")
+
+    adapter_group = dict(row)
+    if adapter_group.get("upstream_key"):
+        adapter_group["upstream_key"] = crypto.decrypt(adapter_group["upstream_key"])
+    adapter = get_adapter(row["login_type"])()
+    try:
+        result = await adapter.get_reset_credits(adapter_group, remote_account_id)
+    except NotImplementedError:
+        raise HTTPException(400, f"登录类型 {row['login_type']} 不支持重置明细查询")
+    except Exception as e:
+        raise HTTPException(502, f"获取重置明细失败: {e}")
+
+    credits = result.get("credits") if isinstance(result.get("credits"), list) else []
+    await db.execute(
+        "UPDATE accounts SET reset_credits=? WHERE id=?",
+        (json.dumps(credits, ensure_ascii=False), account_id))
+    await db.commit()
+    return {
+        "reset_credits": credits,
+    }
 
 
 @router.get("/{account_id}/tasks")
