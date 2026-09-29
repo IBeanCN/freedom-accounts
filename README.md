@@ -1,111 +1,156 @@
 # freedom-accounts
 
-账号任务管理平台：分组管理 + 指纹浏览器（[CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 方案）+ Playwright 页面自动化 + 流程适配器。Python FastAPI + asyncio 协程并发 + SQLite，开箱即用。
+账号任务管理平台，用于把“分组配置、账号数据、指纹浏览器、页面流程和上游适配器”组织成可重复执行的任务。后端使用 FastAPI + asyncio + SQLite，前端使用 Vue 3 + Element Plus + Vite。
 
-## 功能总览
+## 核心能力
 
-| 模块 | 说明 |
-|---|---|
-| 分组管理 | 分组类型（如 `OpenAI-openai`）、名称、任务类型、任务地址、任务 Key 必填；并发数（默认 1）、账号间隔时间（默认 5000–10000ms 随机，填固定区间则按区间）、**指纹模板**（组内账号默认继承、seed 每账号自动随机——适配统一采购机型）可选 |
-| 账号管理 | 账号 / 密码 / 可选 2FA（TOTP base32）；支持单条或批量入队任务 |
-| 任务流程 | 流程适配器获取执行链接 → 指纹浏览器打开并完成页面流程（按需填账号、密码、TOTP）→ 适配器用回调凭证换取上游结果；上游集成全部在适配器内部完成 |
-| 账号展示 | 默认按分组卡片展示，点击分组展开账号表格；分组卡片带一键执行 |
-| 指纹设置 | 账号级指纹：seed、platform、brand、GPU 厂商/渲染器、CPU 核数、内存、分辨率、时区、语言、WebRTC、存储配额等（对应 CloakBrowser `--fingerprint-*` 全系列参数），支持一键随机生成；**分组级指纹模板**：新账号默认继承模板仅随机 seed；账号面板支持**批量换指纹**（仅换 seed / 按模板重建 / 完全随机） |
-| 浏览器模式 | 有头/无头三级配置，**优先级：账号 > 分组 > 系统设置** |
-| 系统设置 | 管理员改密、全局默认有头/无头、cloakserve CDP 地址；License Key 仅经 `.env` 文件配置（见下） |
-| 架构 | asyncio 协程并发（每分组独立调度队列 + 并发信号量），SQLite(WAL) 存储，适配器 HTTP 请求由 httpx 异步发送 |
+- **分组与账号**：按分组配置任务地址、上游凭证、并发与节奏；账号支持单条或批量添加，并可同步上游账号。
+- **指纹浏览器**：优先使用 CloakBrowser；未配置远程 CDP 时使用本地 SDK，SDK 不可用时降级 Playwright Chromium。
+- **任务调度**：每个分组有独立队列和并发控制，支持任务执行、Token 刷新、停止、任务日志和最近状态展示。
+- **账号列表**：展示上游错误、指纹检测、代理和重置明细；重置次数由存储的明细数组推导，只在手动点击刷新时请求上游。
+- **扩展适配器**：上游账号同步、授权链接、凭证兑换、Token 刷新、重置明细查询等能力按适配器实现，新增流程不需要改动调度层。
 
 ## 快速开始
 
+### Docker 一键启动
+
+适合服务器或长期运行环境。
+
 ```bash
-cd freedom-accounts
-./run.sh            # 开发模式；后端 http://127.0.0.1:8000，前端 HMR http://127.0.0.1:5173
-FA_PORT=8001 FRONTEND_PORT=5174 ./run.sh
-./run.sh --prod     # 构建前端并由 FastAPI 托管，默认 http://127.0.0.1:10008
+cp .env.example .env
+./install.sh
 ```
 
-手动方式：
+`install.sh` 会交互式生成必要配置，并使用 Docker Compose 启动应用和 CloakBrowser 浏览器服务。
+
+### 本地开发
+
+适合调试后端接口或前端页面。
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+test -f .env || cp .env.example .env
+# 首次运行前在 .env 中填写 FA_ENCRYPTION_KEY
+./run.sh
+```
+
+开发模式会启动 FastAPI 和 Vite 开发服务器。端口可通过环境变量覆盖：
+
+```bash
+FA_PORT=8001 FRONTEND_PORT=5174 ./run.sh
+```
+
+生产式本地运行：
+
+```bash
+./run.sh --prod
+```
+
+该命令会先构建前端，再由 FastAPI 托管 `frontend/dist`。
+
+### 手动启动
+
+如果不使用 `run.sh`，可以按依赖顺序执行：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium   # 降级引擎需要；cloakbrowser 会自带二进制
-(cd frontend && npm ci && npm run build)
+python -m playwright install chromium
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 启用 CloakBrowser（推荐）
+`playwright install chromium` 是降级引擎所需；使用 CloakBrowser SDK 或远程 CDP 时不需要作为常规前置步骤。
 
-**方式 A：cloakserve 远程 CDP（服务器部署推荐；与本地引擎互斥）**
+## 配置
+
+首次配置建议复制 `.env.example` 为 `.env`，不要把真实 `.env` 提交到仓库。
+
+| 变量 | 是否必填 | 说明 |
+|---|---|---|
+| `FA_ENCRYPTION_KEY` | 必填 | Fernet 密钥，用于加密本地数据库中的密码、2FA 密钥、代理地址和上游 Key 等敏感字段 |
+| `FA_ADMIN_USER` | 建议 | 初始管理员用户名，首次启动后可在系统设置中维护 |
+| `FA_ADMIN_PASSWORD` | 生产必填 | 初始管理员密码；非本机监听时不允许使用开发默认值 |
+| `FA_JWT_SECRET` | 生产必填 | 登录会话签名密钥；非本机监听时不允许使用内置默认值 |
+| `FA_LISTEN_IP` / `FA_PORT` | 可选 | Docker 场景控制宿主机监听地址和端口；默认只监听本机 |
+| `FA_MAX_CONCURRENCY` | 可选 | 单分组并发硬上限 |
+| `FA_CALLBACK_TIMEOUT` | 可选 | 上游适配器请求超时秒数 |
+| `CLOAKBROWSER_LICENSE_KEY` | 可选 | CloakBrowser 授权；只从 `.env` 读取，不能在页面中配置 |
+
+生成 `FA_ENCRYPTION_KEY` 的通用方式：
 
 ```bash
-docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser cloakserve
+python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
-然后在「系统设置」页填入 CDP 地址 `http://127.0.0.1:9222`。平台通过
-`connect_over_cdp("/?fingerprint=<seed>")` 连接，每个账号 seed 对应独立隐身 Chrome
-进程（源码级指纹伪装），运行结束自动调用 `/fingerprint/{seed}/close` 回收进程。
-有头模式可在容器内经 Xvfb 渲染：`cloakserve --headless=false`。
+生产环境还应准备独立的强随机 `FA_JWT_SECRET`：
 
-**方式 B：本地 SDK（已预装）**
+```bash
+openssl rand -hex 32
+```
 
-SDK 已装入项目 venv（cloakbrowser 0.5.10），隐身 Chromium 二进制（v145, darwin-arm64, free 层）已装至 `~/.cloakbrowser/`。使用 `launch_persistent_context_async` 原生异步 API，profile 持久化保留登录态。
+## 浏览器引擎
 
-> 安装排障：若 `python -m cloakbrowser install` 因网络失败（官方 CDN / github.com 直连被阻断），可走 `api.github.com` 的 release asset 通道手动下载：
-> ```bash
-> curl -L -H "Accept: application/octet-stream" -o cloak.tar.gz \
->   "https://api.github.com/repos/CloakHQ/CloakBrowser/releases/assets/<asset_id>"
-> tar -xzf cloak.tar.gz -C ~/.cloakbrowser/chromium-<version>/
-> xattr -dr com.apple.quarantine ~/.cloakbrowser/chromium-<version>/Chromium.app
-> ```
-> macOS 首次运行如被 Gatekeeper 拦截：右键 Chromium.app → 打开（仅一次）。
-
-- Wrapper 免费（MIT）；新版二进制需免费 GitHub Key（1 并发）或 Pro Key（多并发）。
-- 引擎选择是互斥模式：配置 CDP 时只使用 cloakserve CDP，失败不会降级本地 SDK/Playwright；CDP 留空时才使用本地 cloakbrowser SDK，未安装 SDK 时降级 Playwright Chromium + 上下文级伪装（UA/时区/语言/视口 + `--fingerprint-*` 参数透传，反检测能力弱于源码级方案）。
-- 强防护站点（DataDome/Turnstile）建议**有头模式**运行。
-
-## 适配器协议
-
-分组不再配置回调地址或 Header JSON。适配器可选实现下列凭证操作，调用结果只写本地 `adapter_logs`，不暴露对外 HTTP 端点：
-
-| 方法 | 用途 |
-|---|---|
-| `list_accounts` | 拉取上游账号，用于同步 |
-| `get_account` | 查询单个上游账号 |
-| `auth_link` | 获取上游授权链接 |
-| `redeem_token` | 用浏览器回调中的授权凭证换取上游结果 |
-| `refresh_token` | 刷新上游凭证；无对应上游端点时可不实现 |
-
-## 环境变量
-
-| 变量 | 默认 | 说明 |
+| 模式 | 触发条件 | 说明 |
 |---|---|---|
-| `FA_ADMIN_PASSWORD` | admin123 | 初始管理员密码 |
-| `FA_ADMIN_USER` | admin | 初始管理员用户名 |
-| `FA_JWT_SECRET` | 随机占位 | 生产环境必须修改 |
-| `FA_HOST` / `FA_PORT` | 127.0.0.1 / 8000 | 监听地址 |
-| `FA_MAX_CONCURRENCY` | 5 | 单分组并发硬上限 |
-| `FA_CALLBACK_TIMEOUT` | 15 | 上游适配器请求超时秒数 |
+| CloakBrowser CDP | 系统设置中配置了 cloakserve CDP 地址 | 适合容器或远程浏览器；失败时不降级到本地引擎 |
+| CloakBrowser SDK | CDP 留空且本地已安装 SDK | 使用本机 SDK 与持久化浏览器上下文 |
+| Playwright Chromium | CDP 留空且本地 SDK 不可用 | 兜底方案，伪装能力弱于源码级指纹方案 |
+
+CloakBrowser 安装、镜像、授权和版本管理请参考官方项目：<https://github.com/CloakHQ/CloakBrowser>。
+
+## 适配器扩展
+
+适配器注册在 `app/automation/flows/registry.py`。当前内置 `sub2api` 和 `cpr`。
+
+| 能力 | 用途 |
+|---|---|
+| `list_accounts` | 拉取上游账号并同步本地映射 |
+| `get_account` | 查询单个上游账号 |
+| `auth_link` | 获取浏览器流程需要的授权链接 |
+| `redeem_token` | 用浏览器回调凭证换取上游结果 |
+| `refresh_token` | 刷新上游 Token；上游不支持时不实现 |
+| `get_reset_credits` | 查询重置次数与明细；当前 CPR 已实现，Sub2API 暂未对接 |
+
+适配器调用会写入本地 `adapter_logs`，用于审计和排障；这些操作不直接暴露为公开上游接口。
 
 ## 目录结构
 
-```
+```text
 app/
-  core/       config / database(SQLite) / auth(JWT+argon2) / settings
-  routers/    auth / groups / accounts / system(tasks+settings)
-  automation/ fingerprint(指纹生成与参数映射) / browser(引擎启动与降级)
-              flows(流程适配器，可按 group_type 插件化) / scheduler(并发调度)
-frontend/    Vue 3 + Element Plus 前端（Vite 页面级拆分）
-data/         platform.db 与浏览器 profile
+  core/        配置、SQLite、认证、加密和系统设置
+  routers/     登录、分组、账号、系统与代理 API
+  automation/  调度器、浏览器引擎、指纹、任务与流程适配器
+frontend/      Vue 3 + Element Plus + Vite 前端
+data/          本地数据库和浏览器运行数据
+logs/          本地运行日志
 ```
 
-前端构建产物输出到 `frontend/dist`，由 FastAPI 在 `/` 与 `/static` 下服务。
+前端构建产物输出到 `frontend/dist`，生产模式由 FastAPI 托管。
 
-## 自定义登录流程
+## 常用验证
 
-若目标站点需要新流程，在 `app/automation/flows/registry.py` 注册适配器，并把它追加到 `ADAPTERS`。当前内置类型为 `sub2api` 和 `cpr`。
+后端语法检查：
 
-## ⚠️ 使用边界
+```bash
+.venv/bin/python -m compileall -q app
+```
 
-- 平台明文存储账号密码于本地 SQLite（自动化必需），请确保部署机安全；生产环境建议全盘加密与最小权限。
-- 请仅用于你有合法授权的账号与站点；遵守目标站点条款与当地法律法规。
+前端构建检查：
+
+```bash
+cd frontend
+npm run build
+```
+
+## 安全与使用边界
+
+- 本项目会处理账号凭据、2FA 密钥、上游 Key 和代理配置。数据库中的这些敏感字段使用 `FA_ENCRYPTION_KEY` 加密，但密钥、数据库和浏览器数据仍应视为高敏资产。
+- 备份数据库时必须同时保护好备份文件和 `FA_ENCRYPTION_KEY`；丢失密钥会导致加密字段无法恢复。
+- 生产环境使用强管理员密码、独立 JWT Secret、防火墙和 HTTPS 反向代理；避免直接把未受保护的服务暴露到公网。
+- 请只处理你有明确授权的账号和站点，并遵守目标服务条款与当地法律法规。
