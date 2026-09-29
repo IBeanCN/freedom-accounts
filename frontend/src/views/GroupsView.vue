@@ -192,7 +192,7 @@
             <el-tag :type="statusMeta(row.last_status).type">{{ statusMeta(row.last_status).label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近运行" width="170" prop="last_run_at" sortable :sort-method="sortByLastRun">
+        <el-table-column label="最近运行" width="190" prop="last_run_at" sortable :sort-method="sortByLastRun">
           <template #default="{ row }">
             <span class="ellipsis-cell">{{ fmtTime(row.last_run_at) }}</span>
           </template>
