@@ -16,18 +16,24 @@ import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 from collections.abc import Awaitable, Callable
 
+from ....core import config
 from ...phone import PhoneProviderNoNumbers
 from ._util import now, totp_code
 
 CALLBACK_WAIT_SECONDS = 120      # 等 localhost 回调总时长
 CALLBACK_HOSTS = ("localhost", "127.0.0.1")
 ADD_PHONE_URL = "https://auth.openai.com/add-phone"
+LOGIN_ACCOUNT_URL = "https://auth.openai.com/log-in-or-create-account"
+LOGIN_PASSWORD_URL = "https://auth.openai.com/log-in/password"
+EMAIL_VERIFICATION_URL = "https://auth.openai.com/email-verification"
 PHONE_WAIT_POLL_SECONDS = 1.0
+LOGIN_URL_WAIT_SECONDS = 60.0
 
 # Future SMS/phone-pool integrations can fill phone and code themselves. The
 # handler receives (page, email, steps) and returns only after the phone gate
 # has been completed.
 PhoneVerificationHandler = Callable[[object, str, list], Awaitable[None]]
+FlowFailureScreenshot = Callable[[object, str], Awaitable[bool]]
 
 # 页面选择器（与插件 PAGE_STEP_FUNCS 保持一致）
 SEL_EMAIL = 'input[type="email"], input[name="email"], input#email'
@@ -162,8 +168,82 @@ def is_add_phone_url(url: str) -> bool:
         return False
 
 
+def _url_path(url: str) -> str:
+    try:
+        return urlparse(str(url)).path.rstrip("/") or "/"
+    except Exception:
+        return ""
+
+
+def _is_url_path(url: str, expected_url: str) -> bool:
+    try:
+        actual = urlparse(str(url))
+        expected = urlparse(expected_url)
+        return (actual.scheme == expected.scheme
+                and actual.hostname == expected.hostname
+                and _url_path(actual.path) == _url_path(expected.path))
+    except Exception:
+        return False
+
+
+def is_email_verification_url(url: str) -> bool:
+    return _is_url_path(url, EMAIL_VERIFICATION_URL)
+
+
+async def _fail_with_screenshot(page, steps: list, capture_failure_screenshot,
+                                name: str, step: str, detail: str):
+    """Record the exact page state before turning a URL gate into task failure."""
+    saved = False
+    if capture_failure_screenshot is not None:
+        try:
+            saved = bool(await capture_failure_screenshot(page, name))
+        except Exception:
+            saved = False
+    entry = {"t": now(), "step": step, "detail": str(detail)[:500], "ok": False}
+    if saved:
+        entry["screenshot"] = name
+    steps.append(entry)
+    raise RuntimeError(detail)
+
+
+async def _wait_for_login_url(page, steps: list, capture_failure_screenshot, *,
+                              expected_url: str | None = None,
+                              previous_url: str | None = None,
+                              success_message: str,
+                              failure_detail: str,
+                              screenshot_name: str) -> str:
+    """Wait for a URL transition; email verification is always terminal here."""
+    deadline = time.monotonic() + LOGIN_URL_WAIT_SECONDS
+    previous_path = _url_path(previous_url) if previous_url else None
+    while time.monotonic() < deadline:
+        url = page.url
+        if is_email_verification_url(url):
+            await _fail_with_screenshot(
+                page, steps, capture_failure_screenshot, "email_verification",
+                "email_verification_blocked",
+                f"流程进入邮箱验证码页，按规则判定异常: {url[:300]}")
+        if is_localhost(url):
+            return "callback"
+        if is_add_phone_url(url):
+            return "add_phone"
+        if expected_url is not None:
+            if _is_url_path(url, expected_url):
+                _step(steps, "url_detected", f"{success_message}: {url[:300]}")
+                return "ready"
+        elif previous_path is not None and _url_path(url) != previous_path:
+            _step(steps, "url_detected", f"{success_message}: {url[:300]}")
+            return "ready"
+        await asyncio.sleep(0.5)
+    await _fail_with_screenshot(
+        page, steps, capture_failure_screenshot, screenshot_name,
+        "login_url_timeout",
+        f"{failure_detail}，持续 {LOGIN_URL_WAIT_SECONDS:g}s 未跳转；最后页面: {page.url[:300]}")
+
+
 async def install_phone_dom_observer(page) -> None:
     """Install best-effort diagnostics without changing add-phone behavior."""
+    if not config.DEBUG:
+        return
     try:
         await page.add_init_script(f"({_PHONE_DOM_OBSERVER_SCRIPT})()")
     except Exception:
@@ -172,6 +252,8 @@ async def install_phone_dom_observer(page) -> None:
 
 async def collect_phone_dom_events(page, steps: list) -> None:
     """Drain recent add-phone DOM snapshots into task steps for diagnosis."""
+    if not config.DEBUG:
+        return
     try:
         payload = await page.evaluate(
             """() => ({
@@ -192,6 +274,8 @@ async def collect_phone_dom_events(page, steps: list) -> None:
 
 async def drain_phone_dom_errors(page, steps: list) -> list:
     """Drain error nodes captured by the observer without changing the page."""
+    if not config.DEBUG:
+        return []
     try:
         errors = await page.evaluate(
             "() => (window.__faPhoneDom?.errors || []).splice(0, 20)")
@@ -327,7 +411,8 @@ async def _click_continue(page, attempts: int = 5, *,
 async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
                            totp_secret: str, steps: list, *,
                            cdp_engine: bool = False,
-                           phone_handler: PhoneVerificationHandler | None = None) -> dict:
+                           phone_handler: PhoneVerificationHandler | None = None,
+                           capture_failure_screenshot: FlowFailureScreenshot | None = None) -> dict:
     """执行通用 OpenAI 浏览器授权段。
 
     返回 {"callback_url", "code", "state"}；失败抛 RuntimeError（steps 已留痕）。
@@ -359,32 +444,98 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     await page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
     _step(steps, "goto", page.url)
 
+    async def _finish_direct_callback() -> dict:
+        callback_url = captured.get("url") or page.url
+        page.remove_listener("request", _on_request)
+        code, state = parse_callback(callback_url)
+        _step(steps, "callback", redact_callback_url(callback_url))
+        return {"callback_url": callback_url, "code": code, "state": state}
+
     # 3) 填邮箱 -> Continue
-    await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
-                           handler=phone_handler)
+    status = await _wait_for_login_url(
+        page, steps, capture_failure_screenshot,
+        expected_url=LOGIN_ACCOUNT_URL,
+        success_message="已进入账号输入页",
+        failure_detail="未进入账号输入页",
+        screenshot_name="email_timeout")
+    while status == "add_phone":
+        await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                               handler=phone_handler)
+        status = await _wait_for_login_url(
+            page, steps, capture_failure_screenshot,
+            expected_url=LOGIN_ACCOUNT_URL,
+            success_message="已进入账号输入页",
+            failure_detail="手机验证后未进入账号输入页",
+            screenshot_name="email_timeout")
+    if status == "callback":
+        return await _finish_direct_callback()
     await _sleep(5, 10)
     await collect_login_dom_events(page, steps)
     if await _fill_first(page, SEL_EMAIL, email):
         await _sleep(3, 8)
-        await _click_continue(page)
+        if not await _click_continue(page):
+            await _fail_with_screenshot(
+                page, steps, capture_failure_screenshot, "email_timeout",
+                "fill_email", "已进入账号输入页，但未找到可点击的 Continue")
         _step(steps, "fill_email", email)
     else:
-        _step(steps, "fill_email", "未找到邮箱输入框（可能已登录/已是授权页），继续", ok=False)
+        await _fail_with_screenshot(
+            page, steps, capture_failure_screenshot, "email_timeout",
+            "fill_email", "账号输入页未找到邮箱输入框")
     await collect_login_dom_events(page, steps)
 
-    await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
-                           handler=phone_handler)
     # 4) 填密码 -> Continue
     if not (password or "").strip():
         raise RuntimeError("账号未配置密码，无法自动完成授权")
+    status = await _wait_for_login_url(
+        page, steps, capture_failure_screenshot,
+        expected_url=LOGIN_PASSWORD_URL,
+        success_message="已进入密码输入页",
+        failure_detail="提交账号后未进入密码输入页",
+        screenshot_name="password_timeout")
+    while status == "add_phone":
+        await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                               handler=phone_handler)
+        status = await _wait_for_login_url(
+            page, steps, capture_failure_screenshot,
+            expected_url=LOGIN_PASSWORD_URL,
+            success_message="已进入密码输入页",
+            failure_detail="手机验证后未进入密码输入页",
+            screenshot_name="password_timeout")
+    if status == "callback":
+        return await _finish_direct_callback()
     await _sleep(5, 10)
     if await _fill_first(page, SEL_PASSWORD, password):
         await _sleep(3, 8)
-        await _click_continue(page)
+        if not await _click_continue(page):
+            await _fail_with_screenshot(
+                page, steps, capture_failure_screenshot, "password_timeout",
+                "fill_password", "已进入密码输入页，但未找到可点击的 Continue")
         _step(steps, "fill_password", "***")
     else:
-        _step(steps, "fill_password", "未找到密码输入框（可能已登录/无需密码），继续", ok=False)
+        await _fail_with_screenshot(
+            page, steps, capture_failure_screenshot, "password_timeout",
+            "fill_password", "密码输入页未找到密码输入框")
     await collect_login_dom_events(page, steps)
+
+    status = await _wait_for_login_url(
+        page, steps, capture_failure_screenshot,
+        previous_url=LOGIN_PASSWORD_URL,
+        success_message="密码页已跳转",
+        failure_detail="提交密码后页面未离开密码输入页",
+        screenshot_name="password_timeout")
+
+    while status == "add_phone":
+        await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
+                               handler=phone_handler)
+        status = await _wait_for_login_url(
+            page, steps, capture_failure_screenshot,
+            previous_url=LOGIN_PASSWORD_URL,
+            success_message="密码页已跳转",
+            failure_detail="手机验证后页面未离开密码输入页",
+            screenshot_name="password_timeout")
+    if status == "callback":
+        return await _finish_direct_callback()
 
     await _handle_add_phone(page, email, steps, cdp_engine=cdp_engine,
                            handler=phone_handler)
@@ -423,6 +574,11 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     continue_rounds = 0
     try:
         while True:
+            if is_email_verification_url(page.url):
+                await _fail_with_screenshot(
+                    page, steps, capture_failure_screenshot, "email_verification",
+                    "email_verification_blocked",
+                    f"流程进入邮箱验证码页，按规则判定异常: {page.url[:300]}")
             if captured.get("url") or is_localhost(page.url):
                 break
 

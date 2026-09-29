@@ -13,6 +13,7 @@ import json
 import re
 import sys
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import quote
 
@@ -34,6 +35,17 @@ except Exception:
 
 _engine_last_error = ""
 _ACTIVE_LOCAL_PROFILES: set[str] = set()
+LaunchFailureScreenshot = Callable[[object], Awaitable[None]]
+
+
+async def _capture_failure_screenshot(context, capture_failure_screenshot):
+    """Try one diagnostic page image without masking the original launch error."""
+    if capture_failure_screenshot is None:
+        return
+    for page in getattr(context, "pages", None) or []:
+        with contextlib.suppress(Exception):
+            await capture_failure_screenshot(page)
+        return
 
 
 def engine_name() -> str:
@@ -485,7 +497,8 @@ def _kill_leftover_cloak_processes(protected_profiles: set[str] | None = None) -
 
 async def launch_for_account(account_fp: dict, browser_mode: str,
                              profile_key: str | None = None,
-                             proxy_server: str = ""):
+                             proxy_server: str = "",
+                             capture_failure_screenshot: LaunchFailureScreenshot | None = None):
     """Launch a browser for one account.
 
     Returns (closer, context, engine_used, fingerprint_json).
@@ -501,6 +514,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     key = profile_key or uuid.uuid4().hex
     cdp_url = (await settings.get("cloak_cdp_url") or "").strip()
     errors: list[str] = []
+    captured_context = None
 
     # CloakBrowser Pro caps concurrent sessions per plan. An over-cap launch can
     # complete the CDP handshake and THEN be killed by the license guard — the
@@ -522,6 +536,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     if cdp_url:
         try:
             closer, ctx, engine = await _launch_cloakserve(cdp_url, fp, ctx_kwargs, proxy_server)
+            captured_context = ctx
             if not _ctx_is_alive(ctx):
                 # A remote license kill can leave the CDP handshake successful
                 # but return an empty context; avoid treating it as usable.
@@ -537,6 +552,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
             # CDP is an explicit deployment choice. Falling back to local SDK
             # would consume another plan seat and ignore remote headed mode.
             detail = _engine_last_error or str(e)
+            await _capture_failure_screenshot(captured_context, capture_failure_screenshot)
             raise RuntimeError(f"CloakBrowser CDP 启动失败: {detail}") from e
 
     key = profile_key or uuid.uuid4().hex
@@ -548,6 +564,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
         if HAS_CLOAK and HAS_CLOAK_ASYNC:
             closer, ctx = await _launch_cloak_sdk(cmd_args, ctx_kwargs, headless,
                                                   user_data_dir, proxy_server)
+            captured_context = ctx
             if not _ctx_is_alive(ctx):
                 # post-handshake license kill: give the guard a beat, then re-check
                 await asyncio.sleep(1.0)
@@ -574,6 +591,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
         return closer, ctx, "playwright", json.dumps(fp, ensure_ascii=False)
     except Exception as e:
         errors.append(str(e))
+        await _capture_failure_screenshot(captured_context, capture_failure_screenshot)
         raise RuntimeError("all engines failed: " + " | ".join(errors)) from e
 
 
@@ -596,7 +614,8 @@ async def reclaim_manual_sessions() -> int:
 
 async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
                                   profile_key: str | None = None,
-                                  proxy_server: str = ""):
+                                  proxy_server: str = "",
+                                  capture_failure_screenshot: LaunchFailureScreenshot | None = None):
     """launch_for_account + automatic local-seat recovery.
 
     CDP delegates licensing to cloakserve, so it neither waits on the app's
@@ -608,7 +627,8 @@ async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
     try:
         return await launch_for_account(account_fp, browser_mode,
                                         profile_key=profile_key,
-                                        proxy_server=proxy_server)
+                                        proxy_server=proxy_server,
+                                        capture_failure_screenshot=capture_failure_screenshot)
     except SessionLimitError:
         if remote_cdp:
             raise
@@ -616,7 +636,8 @@ async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
             raise SessionLimitError(session_limit_message())
         return await launch_for_account(account_fp, browser_mode,
                                         profile_key=profile_key,
-                                        proxy_server=proxy_server)
+                                        proxy_server=proxy_server,
+                                        capture_failure_screenshot=capture_failure_screenshot)
 
 
 # --------------------------------------------------------------------------

@@ -202,7 +202,8 @@ async def run_sub2api_async(ctx, username: str, password: str, totp_secret: str,
                             group: dict | None = None,
                             account: dict | None = None,
                             cdp_engine: bool = False,
-                            phone_handler=None) -> dict:
+                            phone_handler=None,
+                            capture_failure_screenshot=None) -> dict:
     """编排: auth_link → 浏览器授权（共享段） → redeem_token."""
     group = dict(group or {})
     remote_id = str((account or {}).get("remote_id") or "").strip() or None
@@ -215,7 +216,8 @@ async def run_sub2api_async(ctx, username: str, password: str, totp_secret: str,
     # 2) 通用浏览器授权段（全适配器共享，与上游无关）
     auth = await run_browser_auth(ctx, link["url"], username, password,
                                   totp_secret, steps, cdp_engine=cdp_engine,
-                                  phone_handler=phone_handler)
+                                  phone_handler=phone_handler,
+                                  capture_failure_screenshot=capture_failure_screenshot)
 
     # 3) 上游段: 兑换凭证（exchange 成功即授权完成）
     api, key = _api_base(login_url), _api_key(group)

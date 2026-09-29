@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_screenshots (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,                    -- allow-listed diagnostic screenshot key
+    image BLOB NOT NULL,                   -- JPEG bytes; base64 is only built by clients
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (task_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS adapter_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER,                      -- groups.id at call time (not FK: groups may be deleted)

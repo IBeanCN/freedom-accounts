@@ -60,7 +60,8 @@ def requires_openai_credentials(login_type: str) -> bool:
 async def run_flow(login_type: str, ctx, username: str, password: str,
                    totp_secret: str, login_url: str, steps: list,
                    group: dict | None = None, account: dict | None = None,
-                   cdp_engine: bool = False, phone_handler=None) -> dict:
+                   cdp_engine: bool = False, phone_handler=None,
+                   capture_failure_screenshot=None) -> dict:
     """Async entry used by the scheduler (all engines are native async now).
 
     ``group`` / ``account`` carry the DB rows (extra kwargs, keyword-only in
@@ -77,7 +78,8 @@ async def run_flow(login_type: str, ctx, username: str, password: str,
         except (TypeError, ValueError):
             params = {}
         supports_context = any(
-            name in ("group", "account", "cdp_engine", "phone_handler")
+            name in ("group", "account", "cdp_engine", "phone_handler",
+                     "capture_failure_screenshot")
             or param.kind == inspect.Parameter.VAR_KEYWORD
             for name, param in params.items()
         )
@@ -85,5 +87,6 @@ async def run_flow(login_type: str, ctx, username: str, password: str,
     if supports_context:
         return await fn(ctx, username, password, totp_secret, login_url, steps,
                         group=group, account=account, cdp_engine=cdp_engine,
-                        phone_handler=phone_handler)
+                        phone_handler=phone_handler,
+                        capture_failure_screenshot=capture_failure_screenshot)
     return await fn(ctx, username, password, totp_secret, login_url, steps)

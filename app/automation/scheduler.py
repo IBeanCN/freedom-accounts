@@ -48,6 +48,72 @@ RUN_COOLDOWN_MIN_SECONDS = 15.0
 RUN_COOLDOWN_MAX_SECONDS = 30.0
 
 
+TASK_SCREENSHOT_NAMES = {
+    "launch", "email_timeout", "password_timeout", "email_verification", "flow_error",
+}
+# 1080p width bound; screenshots use CSS pixels so HiDPI output stays bounded too.
+TASK_SCREENSHOT_MAX_WIDTH = 1920
+
+
+def is_task_screenshot_name(name: str) -> bool:
+    return name in TASK_SCREENSHOT_NAMES
+
+
+async def _capture_page_screenshot(page) -> bytes:
+    viewport = getattr(page, "viewport_size", None) or {}
+    if not viewport:
+        viewport = await page.evaluate(
+            "() => ({width: window.innerWidth, height: window.innerHeight})")
+    options = {"type": "jpeg", "quality": 55, "timeout": 5000, "scale": "css"}
+    try:
+        width = int(viewport.get("width") or 0)
+        height = int(viewport.get("height") or 0)
+    except (TypeError, ValueError):
+        width = height = 0
+    if width > TASK_SCREENSHOT_MAX_WIDTH and height > 0:
+        options["clip"] = {
+            "x": 0, "y": 0,
+            "width": TASK_SCREENSHOT_MAX_WIDTH, "height": height,
+        }
+    return await page.screenshot(**options)
+
+
+async def save_task_screenshot(task_id: int, name: str, page) -> bool:
+    """Store one bounded JPEG with its task row; never write diagnostics to disk."""
+    if name not in TASK_SCREENSHOT_NAMES:
+        raise ValueError(f"unsupported task screenshot: {name}")
+    image = await _capture_page_screenshot(page)
+    if not image:
+        return False
+    db = await database.get_db()
+    await db.execute(
+        """INSERT INTO task_screenshots(task_id, name, image) VALUES(?, ?, ?)
+           ON CONFLICT(task_id, name) DO UPDATE SET image=excluded.image""",
+        (int(task_id), name, image),
+    )
+    await db.commit()
+    return True
+
+
+async def has_task_screenshot(task_id: int, name: str) -> bool:
+    """Check whether an allow-listed diagnostic image is stored for a task."""
+    if name not in TASK_SCREENSHOT_NAMES:
+        return False
+    db = await database.get_db()
+    row = await db.execute(
+        "SELECT 1 FROM task_screenshots WHERE task_id=? AND name=?",
+        (int(task_id), name),
+    )
+    return bool(await row.fetchone())
+
+
+async def _capture_context_screenshot(task_id: int, name: str, ctx) -> bool:
+    pages = getattr(ctx, "pages", None) or []
+    if pages:
+        return await save_task_screenshot(task_id, name, pages[0])
+    return False
+
+
 class RunStopped(Exception):
     """Internal signal: a cancelled login run has been persisted and cleaned up."""
 
@@ -384,17 +450,24 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 "t": _now(), "step": "proxy",
                 "detail": browser_mod.mask_proxy_server(proxy_server), "ok": True,
             })
+        async def capture_launch_failure(page):
+            return await save_task_screenshot(task_id, "launch", page)
+
+        async def capture_flow_screenshot(page, name="flow_error"):
+            return await save_task_screenshot(task_id, name, page)
+
         try:
             _EXECUTE_LAUNCHING.add(account_id)
             try:
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
                     fp, mode, profile_key=f"g{group_id}_a{account_id}",
-                    proxy_server=proxy_server)
+                    proxy_server=proxy_server,
+                    capture_failure_screenshot=capture_launch_failure)
                 closer = browser_mod.register_task_context(
                     f"g{group_id}_a{account_id}", closer, ctx)
             finally:
                 _EXECUTE_LAUNCHING.discard(account_id)
-        except browser_mod.SessionLimitError as e:
+        except browser_mod.SessionLimitError:
             # 撞套餐会话上限（通常是手动"打开浏览器"窗口占座）：自动关掉
             # 手动窗口并重试一次；仍失败才落为任务失败。
             steps.append({"t": _now(), "step": "session_limit",
@@ -404,11 +477,21 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             try:
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
                     fp, mode, profile_key=f"g{group_id}_a{account_id}",
-                    proxy_server=proxy_server)
+                    proxy_server=proxy_server,
+                    capture_failure_screenshot=capture_launch_failure)
                 closer = browser_mod.register_task_context(
                     f"g{group_id}_a{account_id}", closer, ctx)
             finally:
                 _EXECUTE_LAUNCHING.discard(account_id)
+        except Exception as exc:
+            launch_step = {
+                "t": _now(), "step": "browser_launched",
+                "detail": str(exc)[:500], "ok": False,
+            }
+            if await has_task_screenshot(task_id, "launch"):
+                launch_step["screenshot"] = "launch"
+            steps.append(launch_step)
+            raise
         steps.append({"t": _now(), "step": "browser_launched", "detail": engine_used, "ok": True})
         fp_applied = json.loads(fp_json) if fp_json and fp_json != "{}" else {}
         if fp_applied:
@@ -424,8 +507,25 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                                           totp_secret, g["login_url"], steps,
                                           group=group_decrypted or dict(g), account=dict(a),
                                           cdp_engine=await browser_mod.cdp_configured(),
-                                          phone_handler=await _resolve_phone_handler(steps, g, a))
+                                          phone_handler=await _resolve_phone_handler(steps, g, a),
+                                          capture_failure_screenshot=capture_flow_screenshot)
         except Exception as exc:
+            try:
+                screenshot_saved = await _capture_context_screenshot(
+                    task_id, "flow_error", ctx)
+            except Exception as capture_exc:
+                screenshot_saved = False
+                steps.append({
+                    "t": _now(), "step": "flow_screenshot_failed",
+                    "detail": str(capture_exc)[:500], "ok": False,
+                })
+            flow_error_step = {
+                "t": _now(), "step": "flow_failed",
+                "detail": str(exc)[:500], "ok": False,
+            }
+            if screenshot_saved:
+                flow_error_step["screenshot"] = "flow_error"
+            steps.append(flow_error_step)
             keep_browser_open = isinstance(exc, PhoneVerificationTerminalError)
             raise
         finally:

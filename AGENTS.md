@@ -90,6 +90,8 @@ cd frontend && npm run build
 | GET | `/api/accounts/{id}/tasks` | 该账号的任务记录 |
 | GET | `/api/tasks` | 任务列表（`?status=` `?limit=`） |
 | GET | `/api/tasks/{id}` | 任务详情 |
+| GET | `/api/tasks/{id}/screenshots/{name}` | 从 `task_screenshots.image` BLOB 读取白名单任务诊断截图（JPEG；`launch` / `email_timeout` / `password_timeout` / `email_verification` / `flow_error`；宽度上限 1920px；未保存返回 404） |
+| GET | `/api/tasks/{id}/launch-screenshot` | 兼容别名，等价于读取 `launch` 截图 |
 | GET / POST | `/api/proxies` | 代理列表（含 `linked_accounts` 关联数与 `server_masked` 掩码地址）/ 新建（`name`、`server`、`custom_geo`、`country/region/city/timezone/locale`） |
 | PUT / DELETE | `/api/proxies/{id}` | 更新（`server` 留空保留原地址）/ 删除（仍被账号关联时返回 409） |
 | POST | `/api/proxies/{id}/test` | 测试连接：经代理请求 ipify 检测出口 IP 与耗时，后台执行，结果写回 `exit_ip` / `latency_ms` / `check_at` / `check_error` |

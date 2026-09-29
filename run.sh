@@ -77,6 +77,12 @@ case "$mode" in
     ;;
 esac
 
+if [ "$mode" = "dev" ]; then
+  export FA_DEBUG="${FA_DEBUG:-1}"
+else
+  export FA_DEBUG=0
+fi
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required for the frontend." >&2
   exit 1

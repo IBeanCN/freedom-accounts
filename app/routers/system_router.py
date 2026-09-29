@@ -3,11 +3,12 @@ import base64
 import ipaddress
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from ..core import crypto, database, settings
 from ..core import tasks
+from ..automation import scheduler
 from ..automation import browser as browser_mod
 from ..automation.phone import get_phone_adapter
 from ..automation.phone.countries import COUNTRY_BY_ISO2
@@ -111,6 +112,37 @@ async def get_task_screenshot(task_id: int, _: None = Depends(require_admin)):
         "url": str(page.url)[:500],
         "image": "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii"),
     }
+
+
+async def _get_saved_task_screenshot(task_id: int, name: str):
+    if not scheduler.is_task_screenshot_name(name):
+        raise HTTPException(404, "screenshot not found")
+    db = await database.get_db()
+    row = await db.execute(
+        "SELECT image FROM task_screenshots WHERE task_id=? AND name=?",
+        (task_id, name),
+    )
+    saved = await row.fetchone()
+    if not saved or not saved["image"]:
+        raise HTTPException(404, "screenshot not found")
+    return Response(
+        content=saved["image"],
+        media_type="image/jpeg",
+        headers={"Content-Disposition": f'inline; filename="task-{task_id}-{name}-screenshot.jpg"'},
+    )
+
+
+@router.get("/tasks/{task_id}/screenshots/{name}")
+async def get_task_step_screenshot(task_id: int, name: str,
+                                   _: None = Depends(require_admin)):
+    """Serve an allow-listed saved task diagnostic image."""
+    return await _get_saved_task_screenshot(task_id, name)
+
+
+@router.get("/tasks/{task_id}/launch-screenshot")
+async def get_task_launch_screenshot(task_id: int, _: None = Depends(require_admin)):
+    """Legacy alias kept for existing task-history image links."""
+    return await _get_saved_task_screenshot(task_id, "launch")
 
 
 # ---------------- settings ----------------

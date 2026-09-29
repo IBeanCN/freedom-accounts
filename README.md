@@ -89,6 +89,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 | `FA_ADMIN_PASSWORD` | 生产必填 | 初始管理员密码；非本机监听时不允许使用开发默认值 |
 | `FA_JWT_SECRET` | 生产必填 | 登录会话签名密钥；非本机监听时不允许使用内置默认值 |
 | `FA_LISTEN_IP` / `FA_PORT` | 可选 | Docker 场景控制宿主机监听地址和端口；默认只监听本机 |
+| `FA_DEBUG` | 可选 | 设为 `1` 才记录手机号验证页 DOM 诊断；`./run.sh --dev` 默认开启，`--prod` 和线上默认关闭 |
 | `FA_MAX_CONCURRENCY` | 可选 | 单分组并发硬上限 |
 | `FA_CALLBACK_TIMEOUT` | 可选 | 上游适配器请求超时秒数 |
 | `CLOAKBROWSER_LICENSE_KEY` | 可选 | CloakBrowser 授权；只从 `.env` 读取，不能在页面中配置 |

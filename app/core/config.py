@@ -64,6 +64,8 @@ if not ENCRYPTION_KEY:
 # Server
 HOST = os.environ.get("FA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("FA_PORT", "8000"))
+# High-volume phone-page diagnostics are opt-in for local debugging only.
+DEBUG = os.environ.get("FA_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Docker: auto-fill CDP address from env; only used when the DB value is empty
 FA_CDP_URL = os.environ.get("FA_CDP_URL", "").strip()

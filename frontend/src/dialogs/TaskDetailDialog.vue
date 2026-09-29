@@ -88,6 +88,15 @@
                   <span class="task-step-index">{{ index + 1 }}</span>
                   <span class="task-step-title">{{ stepLabel(step) }}</span>
                   <span v-if="step.ok === false" class="task-step-state">异常</span>
+                  <el-button
+                    v-if="step.screenshot"
+                    class="step-image-button"
+                    link
+                    size="small"
+                    type="primary"
+                    :icon="View"
+                    @click="openStepImage(step)"
+                  >查看图片</el-button>
                 </div>
                 <p v-if="stepDetail(step)" class="task-step-detail">{{ stepDetail(step) }}</p>
               </div>
@@ -110,11 +119,50 @@
       <el-button v-else type="primary" @click="visible = false">关闭</el-button>
     </template>
   </el-drawer>
+
+  <el-dialog
+    v-model="stepImageVisible"
+    title="异常截图"
+    width="min(960px, 100vw)"
+    append-to-body
+    destroy-on-close
+  >
+    <div class="step-image-toolbar">
+      <el-button-group>
+        <el-button
+          :icon="ZoomOut"
+          :disabled="stepImageScale <= MIN_STEP_IMAGE_SCALE"
+          @click="zoomStepImage(-1)"
+        >缩小</el-button>
+        <el-button
+          :icon="ZoomIn"
+          :disabled="stepImageScale >= MAX_STEP_IMAGE_SCALE"
+          @click="zoomStepImage(1)"
+        >放大</el-button>
+      </el-button-group>
+      <span class="step-image-scale">{{ Math.round(stepImageScale * 100) }}%</span>
+      <el-button text type="primary" @click="resetStepImageScale">重置</el-button>
+    </div>
+    <div class="step-image-stage">
+      <div
+        v-if="stepImageSrc"
+        class="step-image-canvas"
+        :style="{ width: `${stepImageScale * 100}%` }"
+      >
+        <img
+          class="step-image-view"
+          :src="stepImageSrc"
+          alt="任务异常页面截图"
+        />
+      </div>
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '@/api/client'
+import { View, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { fmtStepTime, fmtTime, modeText, safeJson, isEmpty } from '@/utils/format'
 import { statusMeta, taskStatusMeta } from '@/utils/status'
 
@@ -144,6 +192,11 @@ const previewUrl = ref('')
 const previewError = ref('')
 const previewLoading = ref(false)
 const previewUpdatedAt = ref('')
+const stepImageVisible = ref(false)
+const stepImageSrc = ref('')
+const stepImageScale = ref(1)
+const MIN_STEP_IMAGE_SCALE = 0.25
+const MAX_STEP_IMAGE_SCALE = 4
 const autoPreview = ref(true)
 const PREVIEW_INTERVAL_CHOICES = [1, 2, 3, 5]
 const previewIntervalSeconds = ref(2)
@@ -153,7 +206,7 @@ let previewBusy = false
 const STEP_LABELS = {
   auth_url: '获取授权链接',
   browser_closed: '浏览器已关闭',
-  browser_launched: '浏览器已启动',
+  browser_launched: '打开指纹浏览器',
   browser_mode: '浏览器模式',
   callback: '获取授权回调',
   callback_timeout: '等待回调超时',
@@ -167,6 +220,10 @@ const STEP_LABELS = {
   fingerprint: '指纹配置',
   fingerprint_detail: '指纹详情',
   goto: '打开授权页',
+  email_verification_blocked: '进入邮箱验证页',
+  flow_failed: '流程异常',
+  flow_screenshot_failed: '异常截图失败',
+  login_url_timeout: '页面跳转超时',
   phone_verification_auto: '启用自动接码',
   phone_verification_balance: '查询接码余额',
   phone_verification_code_filled: '填写验证码',
@@ -192,6 +249,7 @@ const STEP_LABELS = {
   phone_verification_unsupported: '自动接码不支持',
   phone_verification_wait: '等待手动验证',
   proxy: '代理',
+  url_detected: '页面跳转',
   recover_recover_state: '恢复账号状态',
   recover_schedulable: '启用调度',
   session_limit: '会话上限处理',
@@ -224,6 +282,7 @@ watch(visible, async (open) => {
   task.value = null
   steps.value = []
   result.value = null
+  closeStepImage()
   resetPreview()
   stopPreviewTimer()
   if (open && !props.history && props.context?.id) await showDetail(props.context)
@@ -312,7 +371,38 @@ function normalizeStep(step) {
     time: step?.t || step?.time || step?.ts || step?.at || '',
     ok: step?.ok !== false,
     detail,
+    screenshot: step?.screenshot || '',
   }
+}
+
+function stepScreenshotUrl(step) {
+  if (!step.screenshot || !selectedTask.value) return ''
+  return `/api/tasks/${selectedTask.value.id}/screenshots/${encodeURIComponent(step.screenshot)}`
+}
+
+function openStepImage(step) {
+  const src = stepScreenshotUrl(step)
+  if (!src) return
+  stepImageSrc.value = src
+  stepImageScale.value = 1
+  stepImageVisible.value = true
+}
+
+function closeStepImage() {
+  stepImageVisible.value = false
+  stepImageSrc.value = ''
+  stepImageScale.value = 1
+}
+
+function zoomStepImage(direction) {
+  stepImageScale.value = Math.min(
+    MAX_STEP_IMAGE_SCALE,
+    Math.max(MIN_STEP_IMAGE_SCALE, stepImageScale.value + direction * 0.25),
+  )
+}
+
+function resetStepImageScale() {
+  stepImageScale.value = 1
 }
 
 function stepLabel(step) {
@@ -521,6 +611,46 @@ function refresh() {
   line-height: 18px;
   border: 1px solid var(--el-color-danger);
   border-radius: 4px;
+}
+
+.step-image-button {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.step-image-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.step-image-scale {
+  min-width: 44px;
+  color: var(--fa-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.step-image-stage {
+  display: flex;
+  justify-content: center;
+  max-height: min(72vh, 780px);
+  overflow: auto;
+  border: 1px solid var(--fa-line);
+  border-radius: 6px;
+  background: var(--fa-surface);
+}
+
+.step-image-canvas {
+  flex: 0 0 auto;
+}
+
+.step-image-view {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .task-step-detail {
