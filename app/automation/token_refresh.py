@@ -246,7 +246,7 @@ async def refresh_interval_seconds() -> int:
     """Read the configured sweep interval; invalid values fall back to 1 hour."""
     raw = await settings.get("token_refresh_interval_seconds")
     try:
-        return max(1, int(raw))
+        return max(0, int(raw))
     except (TypeError, ValueError):
         return DEFAULT_REFRESH_INTERVAL_SECONDS
 
@@ -255,12 +255,16 @@ def start_scheduler(run_once) -> asyncio.Task:
     """Run the sweep at startup, then use the current setting after each pass."""
     async def _loop() -> None:
         while True:
+            interval = await refresh_interval_seconds()
+            if interval == 0:
+                await asyncio.sleep(60)
+                continue
             try:
                 result = await run_once()
                 if result and result.get("queued"):
                     _log.info("token refresh sweep: %s", result)
             except Exception as e:
                 _log.warning("token refresh sweep failed: %s", e)
-            await asyncio.sleep(await refresh_interval_seconds())
+            await asyncio.sleep(interval)
 
     return tasks.spawn(_loop())

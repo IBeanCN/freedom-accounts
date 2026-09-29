@@ -279,6 +279,8 @@ class Sub2ApiAdapter(FlowAdapter):
                         "status": it.get("status"),
                         "status_label": translate_remote_status(it.get("status")),
                         "enabled": it.get("enabled"),
+                        "access_token_expires_at": (
+                            it.get("accessTokenExpiresAt") or it.get("tokenExpiresAt")),
                         "remark": str(it.get("remark") or it.get("error_message") or "").strip()[:300],
                     }
                     await log_action(group["id"], self.key, "get_account", True,

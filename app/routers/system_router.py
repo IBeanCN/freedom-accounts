@@ -158,7 +158,9 @@ class SettingsBody(BaseModel):
     cloak_cdp_url: str | None = None
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
     token_refresh_interval_seconds: int | None = Field(
-        default=None, ge=60, le=2_592_000)
+        default=None, ge=0, le=2_592_000)
+    account_data_refresh_interval_seconds: int | None = Field(
+        default=None, ge=0, le=2_592_000)
     fp_check_url: str | None = None
     phone_verification_mode: str | None = Field(
         default=None, pattern="^(manual|auto)$")
@@ -196,15 +198,21 @@ async def get_settings(_: None = Depends(require_admin)):
     except ValueError:
         retention = 3
     try:
-        token_interval = max(60, int(await settings.get(
-            "token_refresh_interval_seconds") or 3600))
-    except ValueError:
+        token_interval = max(0, int(await settings.get(
+            "token_refresh_interval_seconds")))
+    except (TypeError, ValueError):
         token_interval = 3600
+    try:
+        account_data_interval = max(0, int(await settings.get(
+            "account_data_refresh_interval_seconds")))
+    except (TypeError, ValueError):
+        account_data_interval = 3600
     return {
         "global_browser_mode": await settings.get("global_browser_mode") or "headless",
         "cloak_cdp_url": cdp,
         "log_retention_days": retention,
         "token_refresh_interval_seconds": token_interval,
+        "account_data_refresh_interval_seconds": account_data_interval,
         "fp_check_url": await settings.get("fp_check_url") or "",
         "phone_verification_mode": await settings.get("phone_verification_mode") or "manual",
         "phone_verification_platform": await settings.get("phone_verification_platform") or "hero_sms",
@@ -330,6 +338,20 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
     if body.token_refresh_interval_seconds is not None:
         await settings.set_value(
             "token_refresh_interval_seconds", str(body.token_refresh_interval_seconds))
+    if body.account_data_refresh_interval_seconds is not None:
+        db = await database.get_db()
+        row = await db.execute("SELECT COUNT(*) AS total FROM accounts WHERE enabled=1")
+        enabled_count = int((await row.fetchone())["total"])
+        if (body.account_data_refresh_interval_seconds > 0
+                and body.account_data_refresh_interval_seconds < enabled_count):
+            raise HTTPException(
+                400,
+                f"账号数据刷新间隔不能小于当前已开启账号数（{enabled_count} 秒）",
+            )
+        await settings.set_value(
+            "account_data_refresh_interval_seconds",
+            str(body.account_data_refresh_interval_seconds),
+        )
     if body.fp_check_url is not None:
         await settings.set_value("fp_check_url", body.fp_check_url.strip())
     if body.phone_verification_mode is not None:

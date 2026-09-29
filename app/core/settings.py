@@ -7,6 +7,7 @@ SETTING_DEFAULTS = {
     "cloak_cdp_url": "",                # cloakserve CDP endpoint, e.g. http://127.0.0.1:9222
     "log_retention_days": "3",          # adapter_logs & task logs older than this are pruned
     "token_refresh_interval_seconds": "3600", # scheduled upstream token refresh interval
+    "account_data_refresh_interval_seconds": "3600", # scheduled upstream account detail refresh interval
     "fp_check_url": "https://fuck-claude.com/zh/",  # fingerprint risk-check site; group may override
     "phone_verification_mode": "manual",  # manual | auto; auto requires the API fields
     "phone_verification_platform": "hero_sms",

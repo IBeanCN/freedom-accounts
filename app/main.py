@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .core import database, settings, maintenance, tasks
 from .core.serialization import normalize_json_response
-from .automation import browser, fpcheck, scheduler, token_refresh
+from .automation import account_refresh, browser, fpcheck, scheduler, token_refresh
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -34,9 +34,11 @@ async def lifespan(app: FastAPI):
     pruner = maintenance.start_pruner()     # hourly sweep
     token_refresher = token_refresh.start_scheduler(
         groups_router.run_due_token_refresh)
+    account_refresher = account_refresh.start_scheduler()
     yield
     pruner.cancel()
     token_refresher.cancel()
+    account_refresher.cancel()
     await fpcheck.shutdown_checks()
     await tasks.cancel_all()
     await scheduler.shutdown()

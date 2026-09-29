@@ -213,6 +213,7 @@ class CprAdapter(FlowAdapter):
                 "plan_type": account.get("planType"),
                 "access_token_expires_at": account.get("accessTokenExpiresAt"),
                 "has_refresh_token": account.get("hasRefreshToken"),
+                "remark": account.get("remark") or account.get("note") or "",
             }
             await log_action(group["id"], self.key, "get_account", True,
                              f"accountId={remote_account_id} status={summary['status']}")

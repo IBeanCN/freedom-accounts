@@ -129,10 +129,20 @@
 
         <el-card shadow="never">
           <template #header>Token 自动刷新</template>
-          <el-form-item label="执行间隔（60–2592000 秒）">
-            <el-input-number v-model="form.token_refresh_interval_seconds" :min="60" :max="2592000" :controls="false" class="full-width" />
+          <el-form-item label="执行间隔（0–2592000 秒）">
+            <el-input-number v-model="form.token_refresh_interval_seconds" :min="0" :max="2592000" :controls="false" class="full-width" />
           </el-form-item>
+          <p class="section-hint">按设置的间隔自动刷新即将过期的 Token；设置为 0 表示停用自动刷新，不会执行后台刷新。</p>
           <template #footer><el-button type="primary" @click="save({ token_refresh_interval_seconds: form.token_refresh_interval_seconds }, `Token 自动刷新间隔已设为 ${form.token_refresh_interval_seconds} 秒`)">保存</el-button></template>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>账号数据自动刷新</template>
+          <el-form-item label="执行间隔（0–2592000 秒）">
+            <el-input-number v-model="form.account_data_refresh_interval_seconds" :min="0" :max="2592000" :controls="false" class="full-width" />
+          </el-form-item>
+          <p class="section-hint">每轮按此间隔调用上游账号详情接口；账号之间固定间隔 1 秒。设置为 0 表示停用自动刷新。启用时，间隔不能小于当前所有已开启账号数（例如 8 个开启账号至少 8 秒）。运行中会实时复核，账号数增加或设置过小时自动跳过/停止本轮，避免频繁调用上游。</p>
+          <template #footer><el-button type="primary" @click="save({ account_data_refresh_interval_seconds: form.account_data_refresh_interval_seconds }, `账号数据刷新间隔已设为 ${form.account_data_refresh_interval_seconds} 秒`)">保存</el-button></template>
         </el-card>
       </div>
       </el-tab-pane>
@@ -190,6 +200,7 @@ const form = reactive({
   cloak_cdp_url: '',
   log_retention_days: 3,
   token_refresh_interval_seconds: 3600,
+  account_data_refresh_interval_seconds: 3600,
   fp_check_url: '',
   phone_verification_mode: 'manual',
   phone_verification_platform: 'hero_sms',
@@ -232,6 +243,7 @@ watch(() => appStore.settings, (settings) => {
     cloak_cdp_url: settings.cloak_cdp_url || '',
     log_retention_days: settings.log_retention_days ?? 3,
     token_refresh_interval_seconds: settings.token_refresh_interval_seconds ?? 3600,
+    account_data_refresh_interval_seconds: settings.account_data_refresh_interval_seconds ?? 3600,
     fp_check_url: settings.fp_check_url || '',
     phone_verification_mode: settings.phone_verification_mode || 'manual',
     phone_verification_platform: settings.phone_verification_platform || 'hero_sms',

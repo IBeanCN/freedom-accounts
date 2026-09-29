@@ -8,6 +8,7 @@ const defaultSettings = {
   cloak_cdp_url: '',
   log_retention_days: 3,
   token_refresh_interval_seconds: 3600,
+  account_data_refresh_interval_seconds: 3600,
   fp_check_url: '',
   phone_verification_mode: 'manual',
   phone_verification_platform: 'hero_sms',
