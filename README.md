@@ -23,6 +23,17 @@ cp .env.example .env
 
 `install.sh` 会交互式生成必要配置，并使用 Docker Compose 启动应用和 CloakBrowser 浏览器服务。
 
+### 更新部署
+
+已有 Docker 部署可以拉取最新代码后重新执行安装脚本：
+
+```bash
+git pull --ff-only
+./install.sh
+```
+
+如果配置不需要变动，所有交互提示直接按回车即可保留现有 `.env` 和 `data/` 数据目录；脚本会自动重新构建镜像并启动服务。
+
 ### 本地开发
 
 适合调试后端接口或前端页面。
