@@ -35,13 +35,13 @@
             <el-tag :type="taskStatusMeta(row).type">{{ taskStatusMeta(row).label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="开始时间" width="150">
+        <el-table-column label="开始时间" width="180">
           <template #default="{ row }">{{ fmtTime(row.started_at) }}</template>
         </el-table-column>
-        <el-table-column label="结束时间" width="150">
+        <el-table-column label="结束时间" width="180">
           <template #default="{ row }">{{ fmtTime(row.finished_at) }}</template>
         </el-table-column>
-        <el-table-column label="创建时间" width="150">
+        <el-table-column label="创建时间" width="180">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="90">

@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .core import database, settings, maintenance, tasks
+from .core.serialization import normalize_json_response
 from .automation import browser, fpcheck, scheduler, token_refresh
 from .routers import auth_router, groups_router, accounts_router, system_router, proxies_router
 
@@ -44,6 +45,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Freedom Accounts", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def serialize_temporal_fields(request, call_next):
+    response = await call_next(request)
+    return await normalize_json_response(response)
 
 app.include_router(auth_router.router)
 app.include_router(groups_router.router)

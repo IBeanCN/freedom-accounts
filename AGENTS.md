@@ -101,6 +101,8 @@ cd frontend && npm run build
 | GET | `/api/geo/lookup` | IP 地理解析（ipwho.is，仅代理弹窗「按出口 IP 解析」使用）：`?ip=` 指定地址；不带参数时先经 ipify 取本机出口 IP 再解析，ipify 不可达时回退裸 `ipwho.is`。返回 `{ok, ip, country, region, city, timezone, locale, error}`（locale 按国家代码映射 BCP47，未知回退 en-US） |
 | POST | `/api/logs/prune` | 手动触发日志清理（正常由后台每小时自动清理） |
 
+所有接口响应中的时间字段统一为 Unix 毫秒时间戳（含任务步骤时间 `steps[].t` 和嵌套明细 `expires_at`）；空值保持空值。浏览器按本地时区格式化展示。
+
 ### 代理生效链路（2026-09-21）
 
 - 优先级：**账号 `accounts.proxy_id` > 分组 `groups.proxy_id`**，两者皆空 = 直连。

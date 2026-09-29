@@ -1,3 +1,5 @@
+import { fmtTime } from '@/utils/format'
+
 export const STATUS_MAP = {
   success: { label: '已完成', type: 'success' },
   failed: { label: '失败', type: 'danger' },
@@ -68,6 +70,8 @@ export function fpBadgeMeta(result, checkedAt) {
   return {
     label: score ? `${level}风险/${score}` : `${level}风险`,
     type: FP_LEVEL_TYPE[level] || 'info',
-    tip: checkedAt ? `${level}风险/${score || ''} · ${checkedAt}` : `${level}风险/${score || ''}`,
+    tip: checkedAt
+      ? `${level}风险/${score || ''} · ${fmtTime(checkedAt)}`
+      : `${level}风险/${score || ''}`,
   }
 }

@@ -574,7 +574,7 @@ export const appStore = reactive({
         await this.loadProxies({ silent: true })
         const proxy = this.proxies.find((item) => String(item.id) === String(proxyId))
         if (!proxy) return
-        const checkedAt = proxy.check_at ? new Date(String(proxy.check_at).replace(' ', 'T')).getTime() : 0
+        const checkedAt = proxy.check_at ? new Date(proxy.check_at).getTime() : 0
         const fresh = !startedAt || checkedAt > startedAt - 2000
         if (fresh && String(proxy.check_error || '').trim()) {
           ElMessage.error(`测试失败：${proxy.check_error}`)
