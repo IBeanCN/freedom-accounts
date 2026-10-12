@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS groups (
     interval_min_ms INTEGER NOT NULL DEFAULT 5000,
     interval_max_ms INTEGER NOT NULL DEFAULT 10000,
     browser_mode TEXT NOT NULL DEFAULT 'inherit', -- headless|headed|inherit
+    clear_cookies_before_auth INTEGER DEFAULT NULL, -- NULL=inherit; 0=keep; 1=clear
     proxy_id INTEGER,                      -- proxies.id for the whole group; account.proxy_id overrides it
     phone_platform TEXT NOT NULL DEFAULT '', -- '' = use system settings; specific key overrides
     fingerprint_template TEXT NOT NULL DEFAULT '{}', -- group-level fp template; accounts inherit it, seed randomized per account
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     totp_secret TEXT NOT NULL DEFAULT '',  -- optional 2FA secret (base32)
     browser_mode TEXT NOT NULL DEFAULT 'inherit', -- headless|headed|inherit
     phone_platform TEXT NOT NULL DEFAULT 'inherit', -- inherit|specific key; account overrides group
+    clear_cookies_before_auth INTEGER DEFAULT NULL, -- NULL=inherit; 0=keep; 1=clear
     fingerprint TEXT NOT NULL DEFAULT '{}',-- JSON: fingerprint config
     enabled INTEGER NOT NULL DEFAULT 1,    -- 1=enabled; 0=disabled (only edit/delete allowed)
     proxy_id INTEGER,                      -- proxies.id; NULL = direct connection
@@ -151,6 +153,8 @@ async def init_db() -> None:
     if "phone_platform" not in cols:
         await db.execute(
             "ALTER TABLE groups ADD COLUMN phone_platform TEXT NOT NULL DEFAULT ''")
+    if "clear_cookies_before_auth" not in cols:
+        await db.execute("ALTER TABLE groups ADD COLUMN clear_cookies_before_auth INTEGER DEFAULT NULL")
     # accounts.enabled may be missing on databases created before it existed
     async with db.execute("PRAGMA table_info(accounts)") as cur:
         acols = {r[1] for r in await cur.fetchall()}
@@ -161,6 +165,8 @@ async def init_db() -> None:
     if "phone_platform" not in acols:
         await db.execute(
             "ALTER TABLE accounts ADD COLUMN phone_platform TEXT NOT NULL DEFAULT 'inherit'")
+    if "clear_cookies_before_auth" not in acols:
+        await db.execute("ALTER TABLE accounts ADD COLUMN clear_cookies_before_auth INTEGER DEFAULT NULL")
     await _migrate_proxies(db)
     async with db.execute("PRAGMA table_info(proxies)") as cur:
         pcols = {r[1] for r in await cur.fetchall()}

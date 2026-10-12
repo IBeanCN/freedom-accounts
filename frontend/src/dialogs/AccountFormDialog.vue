@@ -65,6 +65,15 @@
           </el-form-item>
         </div>
 
+        <el-form-item label="自动授权前清理 Cookie">
+          <el-select v-model="form.clear_cookies_before_auth">
+            <el-option value="inherit" label="跟随分组 / 系统" />
+            <el-option :value="true" label="清理" />
+            <el-option :value="false" label="不清理" />
+          </el-select>
+          <div class="section-hint">覆盖顺序：账号 &gt; 分组 &gt; 系统默认。</div>
+        </el-form-item>
+
         <div class="head-inline page-panel">
           <el-button @click="fillRandom">随机生成</el-button>
           <el-button @click="fillGeo">回填时区</el-button>
@@ -125,6 +134,7 @@ function createForm(account) {
     remark: account?.remark || '',
     enabled: account ? Boolean(account.enabled) : true,
     browser_mode: account?.browser_mode || 'inherit',
+    clear_cookies_before_auth: account?.clear_cookies_before_auth ?? 'inherit',
     phone_platform: account?.phone_platform || 'inherit',
     proxy_id: account?.proxy_id || INHERIT_PROXY,
     fingerprint: { ...(account?.fingerprint || {}) },
@@ -203,6 +213,7 @@ async function submit() {
   const shared = {
     group_id: appStore.currentGroup,
     browser_mode: form.browser_mode,
+    clear_cookies_before_auth: form.clear_cookies_before_auth === 'inherit' ? null : form.clear_cookies_before_auth,
     phone_platform: form.phone_platform,
     fingerprint: fingerprintBody(),
     enabled: form.enabled,

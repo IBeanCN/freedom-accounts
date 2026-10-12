@@ -45,6 +45,7 @@ class AccountBody(BaseModel):
     password: str = ""
     totp_secret: str = ""
     browser_mode: str = Field(default="inherit", pattern="^(headless|headed|inherit)$")
+    clear_cookies_before_auth: bool | None = None
     phone_platform: str = Field(default="inherit")
     fingerprint: dict | str = {}
     enabled: bool = True
@@ -103,6 +104,8 @@ async def list_accounts(group_id: Optional[int] = None):
     out = []
     for r in await rows.fetchall():
         d = dict(r)
+        value = d["clear_cookies_before_auth"]
+        d["clear_cookies_before_auth"] = bool(value) if value is not None else None
         d["fingerprint"] = fp_mod.sanitize(d.get("fingerprint"))
         d["reset_credits"] = _decode_reset_credits(d.get("reset_credits"))
         # 凭据只暴露是否存在，用于任务执行前的前端提示；值永不回传前端。
@@ -150,12 +153,12 @@ async def create_account(body: AccountBody):
     encrypted_totp = crypto.encrypt(body.totp_secret.strip()) if body.totp_secret.strip() else ""
     cur = await db.execute(
         """INSERT INTO accounts(group_id,username,password,totp_secret,browser_mode,
-           phone_platform,fingerprint,enabled,remark,proxy_id)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+           phone_platform,fingerprint,enabled,remark,proxy_id,clear_cookies_before_auth)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (body.group_id, username, encrypted_password, encrypted_totp,
          body.browser_mode, body.phone_platform.strip() or "inherit",
          json.dumps(fp, ensure_ascii=False),
-         int(body.enabled), body.remark, proxy_id))
+         int(body.enabled), body.remark, proxy_id, body.clear_cookies_before_auth))
     await db.commit()
     return {"id": cur.lastrowid, "fingerprint": fp, "created": True, "exists": False}
 
@@ -191,11 +194,13 @@ async def update_account(account_id: int, body: AccountBody):
             raise HTTPException(404, "proxy not found")
     await db.execute(
         """UPDATE accounts SET group_id=?,username=?,password=?,totp_secret=?,browser_mode=?,
-           phone_platform=?,fingerprint=?,enabled=?,remark=?,proxy_id=? WHERE id=?""",
+           phone_platform=?,fingerprint=?,enabled=?,remark=?,proxy_id=?,clear_cookies_before_auth=? WHERE id=?""",
         (body.group_id, body.username, password, totp, body.browser_mode,
          body.phone_platform.strip() or "inherit",
          json.dumps(fp, ensure_ascii=False), int(body.enabled), body.remark,
-         proxy_id, account_id))
+         proxy_id,
+         body.clear_cookies_before_auth if "clear_cookies_before_auth" in body.model_fields_set
+         else old["clear_cookies_before_auth"], account_id))
     await db.commit()
     return {"ok": True}
 

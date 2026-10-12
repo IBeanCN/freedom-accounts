@@ -5,6 +5,7 @@ import { engineLabel } from '@/utils/format'
 
 const defaultSettings = {
   global_browser_mode: 'headless',
+  clear_cookies_before_auth: true,
   cloak_cdp_url: '',
   log_retention_days: 3,
   token_refresh_interval_seconds: 3600,

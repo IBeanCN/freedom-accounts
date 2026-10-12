@@ -460,7 +460,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             _EXECUTE_LAUNCHING.add(account_id)
             try:
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
-                    fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                    fp, mode, profile_key=f"a{account_id}_manual",
                     proxy_server=proxy_server,
                     capture_failure_screenshot=capture_launch_failure)
                 closer = browser_mod.register_task_context(
@@ -476,7 +476,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             _EXECUTE_LAUNCHING.add(account_id)
             try:
                 closer, ctx, engine_used, fp_json = await browser_mod.launch_with_autocleanup(
-                    fp, mode, profile_key=f"g{group_id}_a{account_id}",
+                    fp, mode, profile_key=f"a{account_id}_manual",
                     proxy_server=proxy_server,
                     capture_failure_screenshot=capture_launch_failure)
                 closer = browser_mod.register_task_context(

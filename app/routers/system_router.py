@@ -155,6 +155,7 @@ SITE_DEFAULTS = {
 
 class SettingsBody(BaseModel):
     global_browser_mode: str | None = Field(default=None, pattern="^(headless|headed)$")
+    clear_cookies_before_auth: bool | None = None
     cloak_cdp_url: str | None = None
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
     token_refresh_interval_seconds: int | None = Field(
@@ -209,6 +210,7 @@ async def get_settings(_: None = Depends(require_admin)):
         account_data_interval = 3600
     return {
         "global_browser_mode": await settings.get("global_browser_mode") or "headless",
+        "clear_cookies_before_auth": await settings.get("clear_cookies_before_auth") != "0",
         "cloak_cdp_url": cdp,
         "log_retention_days": retention,
         "token_refresh_interval_seconds": token_interval,
@@ -331,6 +333,8 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
             raise HTTPException(400, f"不支持的国家编码: {page_country}")
     if body.global_browser_mode:
         await settings.set_value("global_browser_mode", body.global_browser_mode)
+    if body.clear_cookies_before_auth is not None:
+        await settings.set_value("clear_cookies_before_auth", "1" if body.clear_cookies_before_auth else "0")
     if body.cloak_cdp_url is not None:
         await settings.set_value("cloak_cdp_url", body.cloak_cdp_url.strip())
     if body.log_retention_days is not None:

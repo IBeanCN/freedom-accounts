@@ -35,6 +35,7 @@ class GroupBody(BaseModel):
     interval_min_ms: int = Field(default=5000, ge=config.INTERVAL_MIN_MS, le=config.INTERVAL_MAX_MS)
     interval_max_ms: int = Field(default=10000, ge=config.INTERVAL_MIN_MS, le=config.INTERVAL_MAX_MS)
     browser_mode: str = Field(default="inherit", pattern="^(headless|headed|inherit)$")
+    clear_cookies_before_auth: bool | None = None
     # group-level proxy; the account-level proxy wins when both are set
     proxy_id: Optional[int] = None
     # group-level phone platform; empty => use system settings
@@ -243,6 +244,8 @@ def _manual_session_key(group_id: int) -> str:
 
 def _row_dict(r) -> dict:
     d = dict(r)
+    value = d["clear_cookies_before_auth"]
+    d["clear_cookies_before_auth"] = bool(value) if value is not None else None
     # callback fields are legacy: hidden from the UI, kept for DB compatibility
     d.pop("callback_url", None)
     d.pop("header_json", None)
@@ -305,13 +308,13 @@ async def create_group(body: GroupBody):
     cur = await db.execute(
         """INSERT INTO groups(group_type,name,login_type,login_url,upstream_key,callback_url,
            header_json,concurrency,interval_min_ms,interval_max_ms,browser_mode,
-           proxy_id,phone_platform,fingerprint_template,fp_check_url)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           proxy_id,phone_platform,fingerprint_template,fp_check_url,clear_cookies_before_auth)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
          body.proxy_id, body.phone_platform.strip(),
-         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip()))
+         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(), body.clear_cookies_before_auth))
     await db.commit()
     return {"id": cur.lastrowid}
 
@@ -324,8 +327,9 @@ async def update_group(group_id: int, body: GroupBody):
     if not is_known_group_type(body.group_type):
         raise HTTPException(400, f"unknown group_type: {body.group_type}")
     db = await database.get_db()
-    row = await db.execute("SELECT id FROM groups WHERE id=?", (group_id,))
-    if not await row.fetchone():
+    row = await db.execute("SELECT id, clear_cookies_before_auth FROM groups WHERE id=?", (group_id,))
+    old = await row.fetchone()
+    if not old:
         raise HTTPException(404, "group not found")
     # a template never pins a seed: sanitized fields only
     tpl = fp_mod.as_template(body.fingerprint_template)
@@ -333,13 +337,15 @@ async def update_group(group_id: int, body: GroupBody):
     await db.execute(
         """UPDATE groups SET group_type=?,name=?,login_type=?,login_url=?,upstream_key=?,
            callback_url=?,header_json=?,concurrency=?,interval_min_ms=?,interval_max_ms=?,
-           browser_mode=?,proxy_id=?,phone_platform=?,fingerprint_template=?,fp_check_url=?
+           browser_mode=?,proxy_id=?,phone_platform=?,fingerprint_template=?,fp_check_url=?,clear_cookies_before_auth=?
            WHERE id=?""",
         (body.group_type, body.name, login_type, body.login_url, encrypted_key,
          "", "[]",
          body.concurrency, body.interval_min_ms, body.interval_max_ms, body.browser_mode,
          body.proxy_id, body.phone_platform.strip(),
-         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(), group_id))
+         json.dumps(tpl, ensure_ascii=False), body.fp_check_url.strip(),
+         body.clear_cookies_before_auth if "clear_cookies_before_auth" in body.model_fields_set
+         else old["clear_cookies_before_auth"], group_id))
     await db.commit()
     return {"ok": True}
 

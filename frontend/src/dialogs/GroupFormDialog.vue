@@ -65,6 +65,15 @@
         </el-form-item>
       </div>
 
+      <el-form-item label="自动授权前清理 Cookie（账号可覆盖）">
+        <el-select v-model="form.clear_cookies_before_auth">
+          <el-option value="inherit" label="跟随系统" />
+          <el-option :value="true" label="清理" />
+          <el-option :value="false" label="不清理" />
+        </el-select>
+        <div class="section-hint">覆盖顺序：账号 &gt; 分组 &gt; 系统默认。</div>
+      </el-form-item>
+
       <el-divider>指纹模板</el-divider>
       <div class="head-inline page-panel">
         <el-button @click="fillRandom">随机一套</el-button>
@@ -126,6 +135,7 @@ function createForm(group) {
     interval_min_ms: group?.interval_min_ms ?? 5000,
     interval_max_ms: group?.interval_max_ms ?? 10000,
     browser_mode: group?.browser_mode || 'inherit',
+    clear_cookies_before_auth: group?.clear_cookies_before_auth ?? 'inherit',
     fp_check_url: group?.fp_check_url || '',
     proxy_id: group?.proxy_id ?? '',
     phone_platform: group?.phone_platform || '',
@@ -169,6 +179,7 @@ async function fillGeo() {
 async function submit() {
   const body = {
     ...form,
+    clear_cookies_before_auth: form.clear_cookies_before_auth === 'inherit' ? null : form.clear_cookies_before_auth,
     name: form.name.trim(),
     login_url: form.login_url.trim(),
     upstream_key: form.upstream_key.trim(),

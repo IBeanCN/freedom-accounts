@@ -217,7 +217,8 @@ async def run_sub2api_async(ctx, username: str, password: str, totp_secret: str,
     auth = await run_browser_auth(ctx, link["url"], username, password,
                                   totp_secret, steps, cdp_engine=cdp_engine,
                                   phone_handler=phone_handler,
-                                  capture_failure_screenshot=capture_failure_screenshot)
+                                  capture_failure_screenshot=capture_failure_screenshot,
+                                  group=group, account=account)
 
     # 3) 上游段: 兑换凭证（exchange 成功即授权完成）
     api, key = _api_base(login_url), _api_key(group)

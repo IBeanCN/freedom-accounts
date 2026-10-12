@@ -557,6 +557,8 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
 
     key = profile_key or uuid.uuid4().hex
     user_data_dir = config.BROWSER_PROFILES_DIR / key
+    if key in _ACTIVE_LOCAL_PROFILES:
+        raise RuntimeError("该账号的浏览器 Profile 正在使用，请先关闭浏览器后重试")
     user_data_dir.mkdir(parents=True, exist_ok=True)
 
     # Local engines are only available when no CDP endpoint is configured.
@@ -623,6 +625,10 @@ async def launch_with_autocleanup(account_fp: dict, browser_mode: str,
     """
     remote_cdp = await cdp_configured()
     if not remote_cdp:
+        # Chromium cannot open a Profile twice. Close the same account's manual
+        # window before the task takes over its saved cookies and local storage.
+        if profile_key:
+            await close_managed_session(profile_key)
         await acquire_seat()
     try:
         return await launch_for_account(account_fp, browser_mode,

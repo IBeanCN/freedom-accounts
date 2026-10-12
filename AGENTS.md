@@ -64,8 +64,8 @@ cd frontend && npm run build
 | GET | `/api/auth/me` | 当前用户（未登录返回 401） |
 | POST | `/api/auth/change-password` | 修改管理员密码 |
 | GET | `/api/meta` | 注册表下发：`login_types`（流程适配器）/ `group_types`（平台注册表），驱动前端下拉 |
-| GET / POST | `/api/groups` | 分组列表 / 新建（含 `fingerprint_template` 指纹模板、`proxy_id` 分组级代理、`phone_platform` 分组级接码平台，空值跟随系统设置；列表附带 `browser_open` 分组常驻浏览器状态） |
-| PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`）/ 删除分组 |
+| GET / POST | `/api/groups` | 分组列表 / 新建（含 `clear_cookies_before_auth`（true 清理 / false 保留 / null 跟随系统）、`fingerprint_template` 指纹模板、`proxy_id` 分组级代理、`phone_platform` 分组级接码平台，空值跟随系统设置；列表附带 `browser_open` 分组常驻浏览器状态） |
+| PUT / DELETE | `/api/groups/{id}` | 更新（含 `proxy_id`、`clear_cookies_before_auth`；省略后者保留原配置）/ 删除分组 |
 | POST | `/api/groups/{id}/start` | 分组一键执行；body 可选 `account_ids`，有值只处理选中账号，空/缺省处理全部账号。仍先同步，且入队上游状态 `error` 或无上游账号 ID 的本地手动启用账号。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/groups/{id}/open-browser` | 打开常驻交互浏览器（本地 SDK 引擎专用：配置了 `cloak_cdp_url` 时 409 拒绝）。用分组指纹模板（无模板则全随机，seed 必随机）+ 分组代理、有头模式；按组幂等（`reused:true` 表示复用已开窗口），不自动关闭，`/close-browser` 或服务停止时关闭 |
 | POST | `/api/groups/{id}/close-browser` | 关闭该分组的常驻交互浏览器（无会话时 `closed:false`，幂等） |
@@ -74,8 +74,8 @@ cd frontend && npm run build
 | POST | `/api/groups/{id}/refresh-tokens` | 一键刷新 Token；先同步上游，再按 `account_ids`（空/缺省=全部）筛选启用且上游状态「正常」的账号。批量只处理 Token 已可解析、剩余寿命 ≤30 分钟且非四种运行态的账号，账号间随机间隔 5–20 秒；全局只允许一个 Token 刷新队列，执行过程写入 `operation=token_refresh` 任务日志并回写 `token_refresh_result` / `token_refresh_at` / 新过期时间 |
 | POST | `/api/groups/{id}/fp-check` | 指纹模板检测：用分组模板生成代表性指纹验证可用性（后台执行，结果写 `groups.fp_check_result`）；前置校验检测地址（分组覆盖 > 系统设置），两处皆空返回 400 提示先配置 |
 | POST | `/api/groups/{id}/fp-check/stop` | 停止分组指纹模板检测：取消后台任务并等待指纹浏览器关闭，结果落为「已停止」；无活跃任务且无「检测中」残留时 409 |
-| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`、`reset_credits`（反序列化后的重置明细数组；次数由数组长度推导）、`browser_open`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
-| PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理）/ 删除账号 |
+| GET / POST | `/api/accounts` | 账号列表（`?group_id=`，行内含 `proxy_name`、`remote_status`（已转中文，仅展示）、`remote_remark`、`reset_credits`（反序列化后的重置明细数组；次数由数组长度推导）、`browser_open`）/ 新建（同分组内按账号名大小写不敏感查重，已存在返回 `exists:true` 并跳过；含 `clear_cookies_before_auth`（true 清理 / false 保留 / null 跟随分组）、`enabled` 启用状态、`proxy_id` 账号级代理；新建空环境时 `browser_mode=inherit`、`phone_platform=inherit`、`proxy_id=null`、`fingerprint={}`，分别继承分组/系统模式、分组/系统接码平台、分组代理和分组指纹模板） |
+| PUT / DELETE | `/api/accounts/{id}` | 更新（含 `proxy_id` 关联代理、`clear_cookies_before_auth`；省略后者保留原配置）/ 删除账号 |
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/{id}/open-browser` | 按账号已保存指纹打开常驻交互浏览器（本地 SDK 引擎专用，CDP 配置时 409 拒绝；停用或运行态账号 409 拒绝）。代理按账号 > 分组解析，有头模式，按账号幂等（`reused:true` 表示复用已开窗口） |
 | POST | `/api/accounts/{id}/close-browser` | 关闭该账号的常驻交互浏览器（无会话时 `closed:false`，幂等） |
@@ -95,7 +95,7 @@ cd frontend && npm run build
 | GET / POST | `/api/proxies` | 代理列表（含 `linked_accounts` 关联数与 `server_masked` 掩码地址）/ 新建（`name`、`server`、`custom_geo`、`country/region/city/timezone/locale`） |
 | PUT / DELETE | `/api/proxies/{id}` | 更新（`server` 留空保留原地址）/ 删除（仍被账号关联时返回 409） |
 | POST | `/api/proxies/{id}/test` | 测试连接：经代理请求 ipify 检测出口 IP 与耗时，后台执行，结果写回 `exit_ip` / `latency_ms` / `check_at` / `check_error` |
-| GET / PUT | `/api/settings` | 系统设置读写（含 `log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`phone_verification_mode` OpenAI 手机号验证模式，默认 `manual`；`auto` 必须配置国家与加密 Key，运行时缺失自动回退 manual；`phone_verification_platform` 默认接码平台，分组 `phone_platform` 空值时生效；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填；`site_page_title/site_main_title/site_subtitle` 站点品牌原始配置，空值回退默认） |
+| GET / PUT | `/api/settings` | 系统设置读写（含 `clear_cookies_before_auth` 自动授权前清理 Cookie 开关，布尔值，默认 true；`log_retention_days` 日志保留天数，默认 3；`token_refresh_interval_seconds` Token 自动刷新间隔秒数，默认 3600，范围 60–2592000；`fp_check_url` 指纹检测站点，分组可用 `fp_check_url` 覆盖；`phone_verification_mode` OpenAI 手机号验证模式，默认 `manual`；`auto` 必须配置国家与加密 Key，运行时缺失自动回退 manual；`phone_verification_platform` 默认接码平台，分组 `phone_platform` 空值时生效；`default_geo_country/region/city/timezone/locale` 全局默认时区位置，代理弹窗开启「自定义时区位置」时预填；`site_page_title/site_main_title/site_subtitle` 站点品牌原始配置，空值回退默认） |
 | GET | `/api/site-settings` | 公开站点品牌生效值（`site_page_title/site_main_title/site_subtitle`）；无需登录，空配置返回内置默认 |
 | GET | `/api/settings/phone-countries` | 读取当前接码适配器的 `get_countries`；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key；返回 `{countries:[{code,name}]}`。Key 缺失或调用失败时返回空数组 |
 | GET | `/api/settings/phone-balance` | 查询接码平台余额；可选 `?platform=` 覆盖已保存平台、`?api_key=` 覆盖已保存 Key，返回 `{balance}`。无 Key 或平台不支持返回空字符串 |
@@ -116,6 +116,8 @@ cd frontend && npm run build
 
 - **保存前指纹确认**：账号与分组表单在提交前用 `frontend/src/utils/fingerprint.js` 的 `fpChangedFields()` 对比新旧指纹（账号用 `fingerprint`，分组模板用 `fingerprint_template`），任一字段差异即用 `ElMessageBox.confirm` 列出中文变更项（`FP_FIELD_LABEL`）。前端把关，后端不加锁。
 - **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。Vue 页面用 `appStore.localEngine` 控制浏览器按钮显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
+
+账号本地手动浏览器与自动授权任务共用 `data/browser_profiles/a{account_id}_manual`；自动任务启动前先关闭同账号手动窗口，防止 Profile 同时打开。任务诊断会话键仍为 `g{group_id}_a{account_id}`。分组手动浏览器和指纹检测保持独立目录；远程 CDP 的持久化由服务端负责。
 
 ### 三个已知的响应格式陷阱
 
@@ -140,7 +142,7 @@ cd frontend && npm run build
 
 复刻 s2accheck 浏览器插件（`/Users/ibean/Documents/s2accheck`）的 10 步授权链路。**OpenAI 浏览器授权段全适配器通用**，执行任务时唯一差异是「拿授权 URL / 回调换凭证」的上游 API：
 
-- **共享浏览器段** `app/automation/flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps, *, cdp_engine=False, phone_handler=None)`：清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
+- **共享浏览器段** `app/automation/flows/adapters/_openai_browser.py` 的 `run_browser_auth(ctx, auth_url, email, password, totp_secret, steps, *, cdp_engine=False, phone_handler=None)`：按 `clear_cookies_before_auth` 清 Cookie（账号 > 分组 > 系统；账号/分组 null 表示继承，系统默认开启，关闭则保留）→ 打开授权页 → 自动填邮箱/密码/TOTP（选择器与插件一致：`button[data-dd-action-name="Continue"]` 等；打开页面/邮箱 Continue 后 5–10 秒，fill 与 click 间 3–8 秒，元素未就绪检查 5 次、间隔 5–10 秒）→ 持续点 Continue → 轮询等 localhost 回调（120s 超时）→ 返回 `{callback_url, code, state}`。另有 `parse_callback` / `is_localhost` 工具。新增 OpenAI 类适配器禁止重写这段。
 - **手机号验证门**：精确匹配 `https://auth.openai.com/add-phone`（忽略 query/hash）。CDP 环境立即终止任务；本地 SDK 保持页面不动、不点 Continue，无限等待用户输入手机号/验证码，URL 离开该页后重置回调等待并继续。自动接码平台统一实现 `automation/phone/base.py` 的 `get_balance` / `get_number` / `get_code` / `confirm_received`，返回规范 `PhoneOrder(phone, provider_order_id)`；注册表在 `automation/phone/registry.py`，当前仅登记 HeroSMS 骨架（底层协议未实现）。系统设置 `phone_verification_mode=auto` 且平台/国家/Key 齐全时，调度器注入 `_phone_verification.provider_phone_verification`；平台不支持、配置缺失或自动执行失败时回退手动。`phone_handler(page, email, steps)` 仍是自动服务的注入点。
 - **flow = 纯编排**：`auth_link`（上游拿授权 URL）→ `run_browser_auth`（共享段）→ `redeem_token`（上游换凭证）。sub2api 与 cpr 的 `run_async` 结构完全相同；`run_sync` 一律报「仅支持异步引擎」。无上游 ID 的本地手动账号可参与一键执行；CPR 请求授权链接时省略 `accountId`。
 - **执行冷却**：单个账号任务结束并回写结果后，调度器保留该组并发槽位随机等待 15–30 秒，再让该槽位的下一个排队账号获取。

@@ -11,7 +11,9 @@
             <el-radio-button value="headed">有头 headed</el-radio-button>
           </el-radio-group>
           <p class="section-hint">覆盖顺序：账号 &gt; 分组 &gt; 系统设置。服务器部署建议无头；强防护站点建议切换有头。</p>
-          <template #footer><el-button type="primary" @click="save({ global_browser_mode: form.global_browser_mode }, '浏览器模式已保存')">保存</el-button></template>
+          <el-checkbox v-model="form.clear_cookies_before_auth">自动授权前清理 Cookie</el-checkbox>
+          <p class="section-hint">勾选清理，取消勾选保留；账号 &gt; 分组 &gt; 系统默认。账号手动浏览器与自动任务共用浏览器数据，任务执行前会关闭该账号的手动窗口。</p>
+          <template #footer><el-button type="primary" @click="save({ global_browser_mode: form.global_browser_mode, clear_cookies_before_auth: form.clear_cookies_before_auth }, '浏览器设置已保存')">保存</el-button></template>
         </el-card>
 
         <el-card shadow="never">
@@ -197,6 +199,7 @@ const siteForm = reactive({
 
 const form = reactive({
   global_browser_mode: 'headless',
+  clear_cookies_before_auth: true,
   cloak_cdp_url: '',
   log_retention_days: 3,
   token_refresh_interval_seconds: 3600,
@@ -240,6 +243,7 @@ onMounted(load)
 watch(() => appStore.settings, (settings) => {
   Object.assign(form, {
     global_browser_mode: settings.global_browser_mode || 'headless',
+    clear_cookies_before_auth: settings.clear_cookies_before_auth ?? true,
     cloak_cdp_url: settings.cloak_cdp_url || '',
     log_retention_days: settings.log_retention_days ?? 3,
     token_refresh_interval_seconds: settings.token_refresh_interval_seconds ?? 3600,

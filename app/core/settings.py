@@ -4,6 +4,7 @@ from ..core import config, database, auth
 SETTING_DEFAULTS = {
     "admin_password_hash": "",          # empty => bootstrap from INITIAL_ADMIN_PASSWORD
     "global_browser_mode": "headless",  # headless | headed
+    "clear_cookies_before_auth": "1",   # preserve the existing fresh-login behavior
     "cloak_cdp_url": "",                # cloakserve CDP endpoint, e.g. http://127.0.0.1:9222
     "log_retention_days": "3",          # adapter_logs & task logs older than this are pruned
     "token_refresh_interval_seconds": "3600", # scheduled upstream token refresh interval
@@ -75,3 +76,13 @@ async def set_value(key: str, value: str) -> None:
     )
     await db.commit()
     _CACHE[key] = value
+
+
+async def resolve_clear_cookies_before_auth(account: dict | None = None,
+                                            group: dict | None = None) -> bool:
+    """Account > group > system; explicit False must override an enabled parent."""
+    for row in (account, group):
+        value = (row or {}).get("clear_cookies_before_auth")
+        if value is not None:
+            return bool(value)
+    return await get("clear_cookies_before_auth") != "0"

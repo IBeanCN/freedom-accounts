@@ -1,7 +1,7 @@
 """OpenAI 浏览器授权段（全适配器共享）.
 
 auth.openai.com 的页面操作与上游无关：
-  清 openai/chatgpt cookie → 打开授权页 → 自动填邮箱/密码/TOTP →
+  按系统设置清 Cookie → 打开授权页 → 自动填邮箱/密码/TOTP →
   持续点 Continue → 轮询等 localhost 回调 → 提取 code/state
 
 上游差异（拿授权 URL / 回调换凭证）由各适配器的 auth_link / redeem_token
@@ -16,7 +16,7 @@ import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 from collections.abc import Awaitable, Callable
 
-from ....core import config
+from ....core import config, settings
 from ...phone import PhoneProviderNoNumbers
 from ._util import now, totp_code
 
@@ -412,7 +412,8 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
                            totp_secret: str, steps: list, *,
                            cdp_engine: bool = False,
                            phone_handler: PhoneVerificationHandler | None = None,
-                           capture_failure_screenshot: FlowFailureScreenshot | None = None) -> dict:
+                           capture_failure_screenshot: FlowFailureScreenshot | None = None,
+                           group: dict | None = None, account: dict | None = None) -> dict:
     """执行通用 OpenAI 浏览器授权段。
 
     返回 {"callback_url", "code", "state"}；失败抛 RuntimeError（steps 已留痕）。
@@ -430,15 +431,13 @@ async def run_browser_auth(ctx, auth_url: str, email: str, password: str,
     # listener must already be active before that wait starts.
     page.on("request", _on_request)
 
-    # 1) 清 openai/chatgpt cookie（防旧会话把授权页重定向走）
-    try:
+    # 1) 账号 > 分组 > 系统；显式关闭时沿用账号 Profile 的登录状态。
+    if await settings.resolve_clear_cookies_before_auth(account, group):
         try:
-            await ctx.clear_cookies(domains=["openai.com", "chatgpt.com"])
-        except TypeError:
             await ctx.clear_cookies()
-        _step(steps, "clear_cookies", "openai/chatgpt cookies cleared")
-    except Exception as e:
-        _step(steps, "clear_cookies", f"清理失败（继续）: {e}", ok=False)
+            _step(steps, "clear_cookies", "cookies cleared")
+        except Exception as e:
+            _step(steps, "clear_cookies", f"清理失败（继续）: {e}", ok=False)
 
     # 2) 打开授权页
     await page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
