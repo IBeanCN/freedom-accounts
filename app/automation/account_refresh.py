@@ -3,7 +3,9 @@ import asyncio
 import logging
 
 from ..core import crypto, database, settings, tasks
+from . import scheduler, token_refresh
 from .flows import get_adapter
+from .flows.adapters._util import totp_code
 
 DEFAULT_INTERVAL_SECONDS = 3600
 ACCOUNT_DELAY_SECONDS = 1
@@ -28,6 +30,30 @@ async def _enabled_count(db) -> int:
 
 def _supports_detail(adapter) -> bool:
     return type(adapter).__dict__.get("get_account") is not None
+
+
+async def _enqueue_cpr_account(db, account_id: int) -> int:
+    """Use the group-start gates after refresh, without another upstream sync."""
+    # Re-read local gates: credentials, enabled state or group may have changed
+    # while the upstream detail request was in flight.
+    row = await (await db.execute(
+        """SELECT a.group_id, a.enabled, a.remote_status, a.last_status,
+                  a.password, a.totp_secret, g.login_type, g.login_url, g.upstream_key
+           FROM accounts a JOIN groups g ON g.id=a.group_id WHERE a.id=?""",
+        (account_id,),
+    )).fetchone()
+    if (not row or row["login_type"] != "cpr" or not row["enabled"]
+            or row["remote_status"] not in ("error", "错误")
+            or token_refresh.is_account_busy(row["last_status"])):
+        return 0
+    if (not (row["login_url"] or "").strip()
+            or not (row["upstream_key"] or "").strip() or not row["password"]):
+        _log.warning("account %s auto login skipped: missing configuration or password", account_id)
+        return 0
+    if row["totp_secret"] and totp_code(crypto.decrypt(row["totp_secret"])) is None:
+        _log.warning("account %s auto login skipped: invalid TOTP secret", account_id)
+        return 0
+    return await scheduler.enqueue(row["group_id"], [account_id])
 
 
 async def _refresh_once() -> dict:
@@ -84,6 +110,14 @@ async def _refresh_once() -> dict:
             refreshed += 1
         except Exception as exc:
             _log.warning("account %s detail refresh failed: %s", row["id"], exc)
+        else:
+            if row["login_type"] == "cpr":
+                try:
+                    queued = await _enqueue_cpr_account(db, row["id"])
+                    if queued:
+                        _log.info("account %s auto login queued", row["id"])
+                except Exception:
+                    _log.exception("account %s auto login enqueue failed", row["id"])
         if index < len(rows) - 1:
             await asyncio.sleep(ACCOUNT_DELAY_SECONDS)
     return {"refreshed": refreshed, "skipped": False,

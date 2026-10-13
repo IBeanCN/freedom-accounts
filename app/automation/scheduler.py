@@ -12,6 +12,7 @@ Design:
 """
 import asyncio
 import json
+import logging
 import random
 import time
 from datetime import datetime
@@ -26,6 +27,8 @@ from .flows.adapters._phone_verification import (
     provider_phone_verification,
 )
 from .phone import get_phone_adapter
+
+_log = logging.getLogger("automation.scheduler")
 
 _groups: dict[int, dict] = {}   # group_id -> {"queue": Queue, "dispatcher": Task, "sem": Semaphore}
 _lock = asyncio.Lock()
@@ -422,6 +425,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     status, error, result_json, fp_json, mode = "failed", "", {}, "{}", ""
     engine_used = browser_mod.engine_name()
     closer = None
+    disable_reason = ""
     try:
         cur = await db.execute(
             """INSERT INTO tasks(group_id,account_id,status,created_at,started_at)
@@ -547,6 +551,26 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 if isinstance(result_json.get(key), str):
                     result_json[key] = redact_callback_url(result_json[key])
         status = "success"
+        if g["login_type"] == "cpr" and (a["remote_id"] or "").strip():
+            # OAuth completion alone does not prove the upstream account recovered.
+            # Check fresh detail while the local account is still marked running.
+            try:
+                check_group = dict(group_decrypted or g)
+                if group_decrypted is None:
+                    check_group["upstream_key"] = crypto.decrypt(check_group["upstream_key"] or "")
+                detail = await flows.get_adapter("cpr")().get_account(check_group, a["remote_id"])
+                remote_status = str(detail.get("status_label") or "").strip()
+                await db.execute(
+                    "UPDATE accounts SET remote_status=?, remote_remark=? WHERE id=?",
+                    (remote_status, str(detail.get("remark") or "").strip(), account_id))
+                if remote_status in ("error", "错误"):
+                    disable_reason = "上号结束后上游仍为错误，已停用本地账号"
+                steps.append({"t": _now(), "step": "cpr_status_check",
+                              "detail": remote_status, "ok": not disable_reason})
+            except Exception:
+                steps.append({"t": _now(), "step": "cpr_status_check",
+                              "detail": "上游详情校验失败，未按旧状态停用账号", "ok": False})
+                _log.exception("account %s post-login CPR status check failed", account_id)
     except RunStopped:
         status, error = "cancelled", "已手动停止"
         steps.append({"t": _now(), "step": "stopped", "detail": "已手动停止", "ok": False})
@@ -569,6 +593,11 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
         steps.append({"t": _now(), "step": "stopped", "detail": "已手动停止", "ok": False})
     finally:
         _stop_requests.discard(account_id)
+    if g["login_type"] == "cpr" and status == "failed":
+        disable_reason = "上号失败，已停用本地账号"
+    if disable_reason and status != "cancelled":
+        steps.append({"t": _now(), "step": "account_disabled",
+                      "detail": disable_reason, "ok": False})
     steps.append({"t": _now(), "step": "finished", "detail": status, "ok": status == "success"})
     # Keep the final status/steps update ordered after all incremental writes.
     await steps.flush()
@@ -587,8 +616,14 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     msg = error or (result_json.get("note", "") if isinstance(result_json, dict) else "")
     if status == "cancelled":
         msg = "已手动停止"
-    await db.execute("UPDATE accounts SET last_status=?, last_message=? WHERE id=?",
-                     (status, str(msg)[:300], account_id))
+    if disable_reason and status != "cancelled":
+        msg = f"{disable_reason}；{msg}" if msg else disable_reason
+        await db.execute(
+            "UPDATE accounts SET enabled=0, last_status=?, last_message=? WHERE id=?",
+            (status, str(msg)[:300], account_id))
+    else:
+        await db.execute("UPDATE accounts SET last_status=?, last_message=? WHERE id=?",
+                         (status, str(msg)[:300], account_id))
     await db.commit()
     await steps.close()
 
