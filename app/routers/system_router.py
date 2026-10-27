@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from ..core import crypto, database, settings
 from ..core import tasks
+from ..notifications import send_test_notification
+from ..notifications.registry import manifests as notification_manifests
 from ..automation import scheduler
 from ..automation import browser as browser_mod
 from ..automation.phone import get_phone_adapter
@@ -153,6 +155,12 @@ SITE_DEFAULTS = {
 }
 
 
+class NotificationTestBody(BaseModel):
+    notification_channel: str | None = Field(default=None, pattern="^(|dingtalk)$")
+    notification_dingtalk_webhook: str = ""
+    notification_dingtalk_secret: str = ""
+
+
 class SettingsBody(BaseModel):
     global_browser_mode: str | None = Field(default=None, pattern="^(headless|headed)$")
     clear_cookies_before_auth: bool | None = None
@@ -169,6 +177,9 @@ class SettingsBody(BaseModel):
     phone_verification_country: str | None = Field(default=None, max_length=16)
     phone_verification_page_country: str | None = Field(default=None, max_length=2)
     phone_verification_api_key: str | None = None
+    notification_channel: str | None = Field(default=None, pattern="^(|dingtalk)$")
+    notification_dingtalk_webhook: str | None = None
+    notification_dingtalk_secret: str | None = None
     default_geo_country: str | None = Field(default=None, max_length=2)
     default_geo_region: str | None = None
     default_geo_city: str | None = None
@@ -222,6 +233,12 @@ async def get_settings(_: None = Depends(require_admin)):
         "phone_verification_page_country": await settings.get("phone_verification_page_country") or "",
         "phone_verification_api_key_set": bool(
             await settings.get("phone_verification_api_key")),
+        "notification_channel": await settings.get("notification_channel") or "",
+        "notification_channels": notification_manifests(),
+        "notification_dingtalk_webhook_set": bool(
+            await settings.get("notification_dingtalk_webhook")),
+        "notification_dingtalk_secret_set": bool(
+            await settings.get("notification_dingtalk_secret")),
         "default_geo_country": await settings.get("default_geo_country") or "",
         "default_geo_region": await settings.get("default_geo_region") or "",
         "default_geo_city": await settings.get("default_geo_city") or "",
@@ -303,8 +320,35 @@ async def get_page_countries(_: None = Depends(require_admin)):
     return {"countries": countries}
 
 
+@router.post("/settings/notifications/test")
+async def test_notification(body: NotificationTestBody, _: None = Depends(require_admin)):
+    channel = (body.notification_channel or "").strip()
+    if not channel:
+        raise HTTPException(400, "请先选择通知渠道")
+    try:
+        await send_test_notification(
+            channel,
+            body.notification_dingtalk_webhook,
+            body.notification_dingtalk_secret,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"通知测试失败: {str(exc)[:200]}") from exc
+    return {"ok": True}
+
+
 @router.put("/settings")
 async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
+    if body.notification_channel == "dingtalk":
+        webhook = (body.notification_dingtalk_webhook
+                   if body.notification_dingtalk_webhook is not None
+                   else await settings.get("notification_dingtalk_webhook")) or ""
+        secret = (body.notification_dingtalk_secret
+                  if body.notification_dingtalk_secret is not None
+                  else await settings.get("notification_dingtalk_secret")) or ""
+        if not webhook.strip() or not secret.strip():
+            raise HTTPException(400, "启用钉钉通知需要配置 Webhook 地址和密钥")
     if body.phone_verification_mode == "auto":
         platform = body.phone_verification_platform
         platform = (platform if platform is not None
@@ -374,6 +418,16 @@ async def update_settings(body: SettingsBody, _: None = Depends(require_admin)):
         await settings.set_value(
             "phone_verification_api_key",
             crypto.ensure_encrypted(body.phone_verification_api_key.strip()))
+    if body.notification_channel is not None:
+        await settings.set_value("notification_channel", body.notification_channel.strip())
+    if body.notification_dingtalk_webhook is not None:
+        await settings.set_value(
+            "notification_dingtalk_webhook",
+            crypto.ensure_encrypted(body.notification_dingtalk_webhook.strip()))
+    if body.notification_dingtalk_secret is not None:
+        await settings.set_value(
+            "notification_dingtalk_secret",
+            crypto.ensure_encrypted(body.notification_dingtalk_secret.strip()))
     for key in ("default_geo_country", "default_geo_region", "default_geo_city",
                 "default_geo_timezone", "default_geo_locale"):
         val = getattr(body, key)

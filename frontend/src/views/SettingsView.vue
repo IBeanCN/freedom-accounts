@@ -146,6 +146,36 @@
           <p class="section-hint">每轮按此间隔调用上游账号详情接口；账号之间固定间隔 1 秒。设置为 0 表示停用自动刷新。启用时，间隔不能小于当前所有已开启账号数（例如 8 个开启账号至少 8 秒）。运行中会实时复核，账号数增加或设置过小时自动跳过/停止本轮，避免频繁调用上游。</p>
           <template #footer><el-button type="primary" @click="save({ account_data_refresh_interval_seconds: form.account_data_refresh_interval_seconds }, `账号数据刷新间隔已设为 ${form.account_data_refresh_interval_seconds} 秒`)">保存</el-button></template>
         </el-card>
+
+        <el-card shadow="never" class="full-width">
+          <template #header>通知配置</template>
+          <div class="form-grid form-grid--three">
+            <el-form-item label="通知渠道">
+              <el-select v-model="form.notification_channel" class="full-width">
+                <el-option value="" label="不启用" />
+                <el-option
+                  v-for="channel in (appStore.settings.notification_channels || [])"
+                  :key="channel.key"
+                  :value="channel.key"
+                  :label="channel.label"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="form.notification_channel === 'dingtalk'" label="Webhook 地址" class="full-width">
+              <el-input v-model="notificationWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
+              <div class="section-hint">直接粘贴钉钉机器人复制的 Webhook 地址；{{ appStore.settings.notification_dingtalk_webhook_set ? '已配置，留空保持不变' : '未配置' }}</div>
+            </el-form-item>
+            <el-form-item v-if="form.notification_channel === 'dingtalk'" label="密钥" class="full-width">
+              <el-input v-model="notificationSecret" type="password" show-password autocomplete="new-password" placeholder="SEC..." />
+              <div class="section-hint">直接粘贴钉钉机器人复制的密钥；{{ appStore.settings.notification_dingtalk_secret_set ? '已配置，留空保持不变' : '未配置' }}</div>
+            </el-form-item>
+          </div>
+          <p class="section-hint">当前通知格式为钉钉 Markdown。上号开始、结束，以及账号数据自动刷新触发上号时发送通知。</p>
+          <template #footer>
+            <el-button type="primary" @click="saveNotifications">保存</el-button>
+            <el-button :loading="notificationTesting" @click="testNotifications">测试</el-button>
+          </template>
+        </el-card>
       </div>
       </el-tab-pane>
 
@@ -185,6 +215,9 @@ import { appStore } from '@/stores/app'
 
 const resolvingGeo = ref(false)
 const phoneApiKey = ref('')
+const notificationWebhook = ref('')
+const notificationSecret = ref('')
+const notificationTesting = ref(false)
 const phoneBalance = ref('')
 const phoneBalanceLoading = ref(false)
 const phoneError = ref('')
@@ -214,6 +247,7 @@ const form = reactive({
   default_geo_city: '',
   default_geo_timezone: '',
   default_geo_locale: '',
+  notification_channel: '',
 })
 
 const engine = computed(() => appStore.settings.engine || {})
@@ -258,6 +292,7 @@ watch(() => appStore.settings, (settings) => {
     default_geo_city: settings.default_geo_city || '',
     default_geo_timezone: settings.default_geo_timezone || '',
     default_geo_locale: settings.default_geo_locale || '',
+    notification_channel: settings.notification_channel || '',
   })
   siteForm.site_page_title = settings.site_page_title || ''
   siteForm.site_main_title = settings.site_main_title || ''
@@ -278,6 +313,31 @@ async function load() {
 
 async function save(body, message) {
   await appStore.saveSettings(body, message)
+}
+
+async function testNotifications() {
+  notificationTesting.value = true
+  try {
+    await api.post('/api/settings/notifications/test', {
+      notification_channel: form.notification_channel || '',
+      notification_dingtalk_webhook: notificationWebhook.value.trim(),
+      notification_dingtalk_secret: notificationSecret.value.trim(),
+    })
+    ElMessage.success('测试消息已发送')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    notificationTesting.value = false
+  }
+}
+
+async function saveNotifications() {
+  const body = { notification_channel: form.notification_channel || '' }
+  if (notificationWebhook.value.trim()) body.notification_dingtalk_webhook = notificationWebhook.value.trim()
+  if (notificationSecret.value.trim()) body.notification_dingtalk_secret = notificationSecret.value.trim()
+  await appStore.saveSettings(body, '通知设置已保存')
+  notificationWebhook.value = ''
+  notificationSecret.value = ''
 }
 
 async function saveSite() {

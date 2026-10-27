@@ -27,6 +27,7 @@ from .flows.adapters._phone_verification import (
     provider_phone_verification,
 )
 from .phone import get_phone_adapter
+from ..notifications import notify_account_login_finished, notify_account_login_started
 
 _log = logging.getLogger("automation.scheduler")
 
@@ -425,7 +426,9 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
     status, error, result_json, fp_json, mode = "failed", "", {}, "{}", ""
     engine_used = browser_mod.engine_name()
     closer = None
+    ctx = None
     disable_reason = ""
+    last_page_url = ""
     try:
         cur = await db.execute(
             """INSERT INTO tasks(group_id,account_id,status,created_at,started_at)
@@ -438,6 +441,7 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
             "UPDATE accounts SET last_status='running', last_task_id=?, last_run_at=? WHERE id=?",
             (task_id, started_at, account_id))
         await db.commit()
+        await notify_account_login_started(a["username"])
 
         mode = await browser_mod.resolve_browser_mode(a["browser_mode"], g["browser_mode"])
         steps.append({"t": _now(), "step": "browser_mode", "detail": mode, "ok": True})
@@ -455,9 +459,19 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 "detail": browser_mod.mask_proxy_server(proxy_server), "ok": True,
             })
         async def capture_launch_failure(page):
+            nonlocal last_page_url
+            try:
+                last_page_url = str(page.url or "")[:500]
+            except Exception:
+                last_page_url = ""
             return await save_task_screenshot(task_id, "launch", page)
 
         async def capture_flow_screenshot(page, name="flow_error"):
+            nonlocal last_page_url
+            try:
+                last_page_url = str(page.url or "")[:500]
+            except Exception:
+                last_page_url = ""
             return await save_task_screenshot(task_id, name, page)
 
         try:
@@ -492,6 +506,9 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 "t": _now(), "step": "browser_launched",
                 "detail": str(exc)[:500], "ok": False,
             }
+            if last_page_url:
+                launch_step["detail"] = f"{launch_step['detail']}；最后页面: {last_page_url}"
+                launch_step["url"] = last_page_url
             if await has_task_screenshot(task_id, "launch"):
                 launch_step["screenshot"] = "launch"
             steps.append(launch_step)
@@ -514,6 +531,12 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                                           phone_handler=await _resolve_phone_handler(steps, g, a),
                                           capture_failure_screenshot=capture_flow_screenshot)
         except Exception as exc:
+            pages = getattr(ctx, "pages", None) or []
+            if pages:
+                try:
+                    last_page_url = str(pages[-1].url or "")[:500]
+                except Exception:
+                    last_page_url = ""
             try:
                 screenshot_saved = await _capture_context_screenshot(
                     task_id, "flow_error", ctx)
@@ -527,6 +550,9 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                 "t": _now(), "step": "flow_failed",
                 "detail": str(exc)[:500], "ok": False,
             }
+            if last_page_url:
+                flow_error_step["detail"] = f"{flow_error_step['detail']}；最后页面: {last_page_url}"
+                flow_error_step["url"] = last_page_url
             if screenshot_saved:
                 flow_error_step["screenshot"] = "flow_error"
             steps.append(flow_error_step)
@@ -626,6 +652,8 @@ async def _execute(db, g, a, *, password: str = "", totp_secret: str = "",
                          (status, str(msg)[:300], account_id))
     await db.commit()
     await steps.close()
+    await notify_account_login_finished(
+        a["username"], status, error=msg, last_url=last_page_url)
 
 
 async def shutdown() -> None:

@@ -4,6 +4,7 @@ import logging
 
 from ..core import crypto, database, settings, tasks
 from . import scheduler, token_refresh
+from ..notifications import notify_account_data_refresh
 from .flows import get_adapter
 from .flows.adapters._util import totp_code
 
@@ -68,12 +69,13 @@ async def _refresh_once() -> dict:
         return {"refreshed": 0, "skipped": True, "enabled_accounts": enabled_count}
 
     rows = await (await db.execute(
-        """SELECT a.id, a.group_id, a.remote_id, g.login_type, g.upstream_key,
+        """SELECT a.id, a.group_id, a.username, a.remote_id, g.login_type, g.upstream_key,
                   g.login_url
            FROM accounts a JOIN groups g ON g.id=a.group_id
            WHERE a.enabled=1 AND TRIM(a.remote_id) != '' ORDER BY a.id"""
     )).fetchall()
     refreshed = 0
+    queued_usernames: list[str] = []
     for index, row in enumerate(rows):
         # Account count and setting may change while a round is in progress.
         current_count = await _enabled_count(db)
@@ -115,11 +117,14 @@ async def _refresh_once() -> dict:
                 try:
                     queued = await _enqueue_cpr_account(db, row["id"])
                     if queued:
+                        queued_usernames.append(row["username"])
                         _log.info("account %s auto login queued", row["id"])
                 except Exception:
                     _log.exception("account %s auto login enqueue failed", row["id"])
         if index < len(rows) - 1:
             await asyncio.sleep(ACCOUNT_DELAY_SECONDS)
+    if queued_usernames:
+        await notify_account_data_refresh(queued_usernames)
     return {"refreshed": refreshed, "skipped": False,
             "enabled_accounts": enabled_count}
 

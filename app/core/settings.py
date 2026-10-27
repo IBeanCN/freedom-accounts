@@ -15,6 +15,9 @@ SETTING_DEFAULTS = {
     "phone_verification_country": "",
     "phone_verification_page_country": "",  # OpenAI page country (ISO 3166-1 alpha-2)
     "phone_verification_api_key": "",     # encrypted at write time
+    "notification_channel": "",          # empty = disabled; currently dingtalk
+    "notification_dingtalk_webhook": "", # encrypted at write time
+    "notification_dingtalk_secret": "",  # encrypted at write time
     # global geo defaults: prefilled into the proxy form when "自定义时区位置"
     # is switched on; manually editable or auto-filled from exit-IP lookup
     "default_geo_country": "",
