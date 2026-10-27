@@ -260,7 +260,7 @@
               </template>
               <template v-else>
                 <el-button link size="small" @click="openAccount(row)">编辑</el-button>
-                <el-button link size="small" type="danger" :disabled="busy(row)" @click="remove(row)">删除</el-button>
+                <el-button link size="small" type="danger" @click="remove(row)">删除</el-button>
               </template>
             </div>
           </template>
