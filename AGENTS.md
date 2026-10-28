@@ -79,6 +79,7 @@ cd frontend && npm run build
 | PUT | `/api/accounts/{id}/enabled` | 启用/停用账号（`queued` / `running` / `token_queued` / `token_running` 禁止停用；停用账号仅允许编辑/删除） |
 | POST | `/api/accounts/{id}/open-browser` | 按账号已保存指纹打开常驻交互浏览器（本地 SDK 引擎专用，CDP 配置时 409 拒绝；停用或运行态账号 409 拒绝）。代理按账号 > 分组解析，有头模式，按账号幂等（`reused:true` 表示复用已开窗口） |
 | POST | `/api/accounts/{id}/close-browser` | 关闭该账号的常驻交互浏览器（无会话时 `closed:false`，幂等） |
+| GET | `/api/accounts/{id}/last-seed` | 该账号最后一次浏览器启动实际使用的 seed：`{seed, engine, launched_at}`，无记录时 `seed` 为 `null`。每次成功启动由 `browser.launch_for_account` 写入（`data/last_seeds/{profile_key}.json`，账号键 `a{id}_manual`，上号任务与「打开浏览器」共用）；账号指纹未配 seed 时会先随机一个再记录，保证本次身份可追溯 |
 | POST | `/api/accounts/start` | 按账号批量执行任务（自动跳过停用账号和四种运行态账号，`blocked` 返回跳过计数；入队后最新状态为 `queued`）。执行前校验密码必填；2FA 选填，已配置时须是可生成验证码的有效 TOTP |
 | POST | `/api/accounts/{id}/stop` | 优雅停止任务：队列中直接移除；执行中取消后续流程并等待指纹浏览器关闭，任务与账号最新状态落为 `cancelled`。仅支持账号任务，不支持刷新 Token |
 | POST | `/api/accounts/{id}/refresh-token` | 账号级刷新 Token；要求启用、上游状态「正常」、过期时间可解析且非运行态，忽略批量用的 30 分钟窗口；成功入队后写入 `token_refresh` 任务日志 |
@@ -110,12 +111,13 @@ cd frontend && npm run build
 - 优先级：**账号 `accounts.proxy_id` > 分组 `groups.proxy_id`**，两者皆空 = 直连。
 - 解析入口 `browser.resolve_proxy(account_proxy_id, group_proxy_id)` 返回完整代理 URL；`scheduler._execute`（账号任务）与 `fpcheck.run_check` / `run_group_check`（指纹检测）都会先解析再传给 `browser.launch_for_account(..., proxy_server=...)`。
 - 指纹检测地址解析入口 `fpcheck.resolve_check_url(group_row)`：**分组 `fp_check_url` > 系统设置 `fp_check_url`**；两处皆空返回 `None`（不再静默回退内置默认），调用方须提示 `fpcheck.NO_URL_MSG`。后台任务兜底会把「失败: 未配置…」写回 `fp_check_result`；API 层在启动前已用同一逻辑拦截（400）。
-- 三个引擎均支持：cloakserve CDP 以 `&proxy=<url>` 查询参数下发；CloakBrowser SDK 与 Playwright 用 `proxy={"server": url}` 启动参数。
+- 两个引擎均支持代理：cloakserve CDP 以 `&proxy=<url>` 查询参数下发；CloakBrowser SDK 用 `proxy={"server": url}` 启动参数。**没有 Playwright 兜底**：SDK 缺失/启动失败/席位占满都直接报原因（`engine_info().unavailable_reason` 说明不可用原因）。
 
 ### 指纹变更二次确认 + 常驻浏览器（2026-09-21）
 
 - **保存前指纹确认**：账号与分组表单在提交前用 `frontend/src/utils/fingerprint.js` 的 `fpChangedFields()` 对比新旧指纹（账号用 `fingerprint`，分组模板用 `fingerprint_template`），任一字段差异即用 `ElMessageBox.confirm` 列出中文变更项（`FP_FIELD_LABEL`）。前端把关，后端不加锁。
-- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式）与 `/close-browser`。Vue 页面用 `appStore.localEngine` 控制浏览器按钮显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。
+- **常驻浏览器**：`browser.open_managed_browser(fp, mode, key, proxy_server)` 维护 `_MANUAL_SESSIONS`（分组键 `g{group_id}_manual`、账号键 `a{account_id}_manual`，每键一个；新开窗口会释放其他手动会话座位），内部 `asyncio.Task` 持有 context，取消时经 `finally` 关浏览器；`close_managed_session` 幂等。API：`/open-browser`（CDP 已配置 → 409；headed 模式；席位占满 → 409 而非 500）与 `/close-browser`。Vue 页面用 `appStore.localEngine` 控制浏览器按钮显隐 —— **仅本地 SDK 模式（CDP 为空）可见**。新开的窗口统一导航到 `browser.DEFAULT_HOME_URL`（`https://ip.net.coffee/gpt/`），导航失败不影响启动结果。
+- **WebRTC**：`fingerprint.cloak_args()` 无条件追加 `--webrtc-ip-handling-policy=disable_non_proxied_udp`，候选只允许经代理。实测账号带代理时 srflx 候选 IP 等于代理登记的 `exit_ip`（47.141.242.53），host 候选走 mDNS `.local`，本机出口不泄露。**引擎没有 `force-webrtc-ip-handling-policy` 开关**，写错名字会被静默忽略。
 
 账号本地手动浏览器与自动授权任务共用 `data/browser_profiles/a{account_id}_manual`；自动任务启动前先关闭同账号手动窗口，防止 Profile 同时打开。任务诊断会话键仍为 `g{group_id}_a{account_id}`。分组手动浏览器和指纹检测保持独立目录；远程 CDP 的持久化由服务端负责。
 

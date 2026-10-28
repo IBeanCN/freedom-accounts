@@ -32,7 +32,7 @@
 | `frontend/src/api/client.js` | fetch 封装、401 广播和统一错误对象 |
 | `frontend/src/utils/status.js` | 任务、回调、上游、指纹状态映射 |
 | `frontend/src/utils/format.js` | 时间、模式、JSON、URL 和账号输入清理 |
-| `frontend/src/utils/fingerprint.js` | 指纹默认值、字段名和差异计算 |
+| `frontend/src/utils/fingerprint.js` | 指纹默认值、字段名、差异计算、选项池取值与导入导出 |
 | `frontend/src/styles/main.css` | 全局布局、设计 token 和少量共享类 |
 | `frontend/src/**/*.vue` 的 `<style scoped>` | 只属于该组件的局部样式 |
 

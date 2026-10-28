@@ -632,7 +632,8 @@ export const appStore = reactive({
   engineTitle() {
     const engine = this.settings.engine || {}
     const label = engineLabel(engine.engine)
-    return engine.cloak_available === false ? `${label} · 降级` : label
+    // 不再有 Playwright 兜底：SDK 不可用即直接停用，标题如实标注而不是"降级"。
+    return engine.cloak_available === false ? `${label} · 不可用` : label
   },
 })
 

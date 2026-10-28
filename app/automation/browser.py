@@ -1,11 +1,15 @@
 """Browser engine launcher.
 
-Engine priority:
+Engines (both CloakBrowser — the only supported product):
   1. cloakserve remote CDP (if cloak_cdp_url configured) — connect_over_cdp with
      a per-account fingerprint seed; closed via /fingerprint/{seed}/close.
   2. cloakbrowser SDK native async API (launch_async / launch_persistent_context
      via anyio worker; SDK >= 0.5.x exposes async Playwright-compatible objects).
-  3. Playwright bundled Chromium fallback (context-level spoofing).
+
+There is deliberately NO Playwright fallback: bundled Chromium ignores every
+``--fingerprint-*`` flag, so a silent downgrade would hand out a browser whose
+fingerprint is not the one configured — the worst possible failure mode here.
+Availability problems are reported to the caller instead.
 """
 import asyncio
 import contextlib
@@ -21,17 +25,22 @@ import httpx
 
 from ..core import config, crypto, database, settings
 from . import fingerprint as fp_mod
+from . import launch_seed
 
 # Try to import cloakbrowser SDK once at module load.
+_CLOAK_IMPORT_ERROR = ""
 try:
     import cloakbrowser  # type: ignore
     HAS_CLOAK = True
     # native async entrypoints present?
     HAS_CLOAK_ASYNC = hasattr(cloakbrowser, "launch_async")
-except Exception:
+    if not HAS_CLOAK_ASYNC:
+        _CLOAK_IMPORT_ERROR = "SDK 版本过低，缺少异步入口 launch_async（需 >= 0.5.x）"
+except Exception as _exc:
     cloakbrowser = None
     HAS_CLOAK = False
     HAS_CLOAK_ASYNC = False
+    _CLOAK_IMPORT_ERROR = f"无法导入 cloakbrowser 模块：{_exc}"
 
 _engine_last_error = ""
 _ACTIVE_LOCAL_PROFILES: set[str] = set()
@@ -49,14 +58,17 @@ async def _capture_failure_screenshot(context, capture_failure_screenshot):
 
 
 def engine_name() -> str:
-    return "cloakbrowser" if HAS_CLOAK else "playwright"
+    # 唯一的引擎就是 CloakBrowser；不可用时由 engine_info 的 cloak_available
+    # 与 unavailable_reason 说明原因，不再有第二个引擎可顶替。
+    return "cloakbrowser"
 
 
 def engine_info() -> dict:
     return {
         "engine": engine_name(),
-        "cloak_available": HAS_CLOAK,
+        "cloak_available": HAS_CLOAK and HAS_CLOAK_ASYNC,
         "async_api": HAS_CLOAK_ASYNC,
+        "unavailable_reason": "" if (HAS_CLOAK and HAS_CLOAK_ASYNC) else _CLOAK_IMPORT_ERROR,
         "license_key_source": license_key_source(),
         "last_error": _engine_last_error,
         "python": sys.version.split()[0],
@@ -226,39 +238,6 @@ async def _launch_cloak_sdk(cmd_args: list[str], ctx_kwargs: dict,
             await ctx.close()
 
     return closer, ctx
-
-
-# --------------------------------------------------------------------------
-# Engine 3: Playwright fallback (native async)
-# --------------------------------------------------------------------------
-async def _launch_playwright(cmd_args: list[str], ctx_kwargs: dict,
-                             headless: bool, user_data_dir: Path,
-                             proxy_server: str = ""):
-    global _engine_last_error
-    try:
-        from playwright.async_api import async_playwright
-    except Exception as e:
-        _engine_last_error = f"playwright not installed: {e}"
-        raise RuntimeError("playwright is not installed") from e
-    launch_kw: dict = {}
-    if proxy_server:
-        launch_kw["proxy"] = {"server": proxy_server}
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch_persistent_context(
-        str(user_data_dir),
-        headless=headless,
-        args=["--no-sandbox", "--disable-blink-features=AutomationControlled"] + cmd_args,
-        **launch_kw,
-        **ctx_kwargs,
-    )
-
-    async def closer():
-        with contextlib.suppress(Exception):
-            await browser.close()
-        with contextlib.suppress(Exception):
-            await pw.stop()
-
-    return closer, browser
 
 
 # --------------------------------------------------------------------------
@@ -507,13 +486,16 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
     through that proxy when non-empty; empty string = direct connection.
     """
     fp = fp_mod.sanitize(account_fp)
+    # 没有配置种子时先落一个：引擎自己随机会让本次身份无从追溯，
+    # 落库后「读取上次启动的 seed」才有东西可读。
+    if not fp.get("seed"):
+        fp["seed"] = fp_mod.random_seed()
     cmd_args = fp_mod.cloak_args(fp)
     ctx_kwargs = fp_mod.context_kwargs(fp)
     headless = browser_mode != "headed"
 
     key = profile_key or uuid.uuid4().hex
     cdp_url = (await settings.get("cloak_cdp_url") or "").strip()
-    errors: list[str] = []
     captured_context = None
 
     # CloakBrowser Pro caps concurrent sessions per plan. An over-cap launch can
@@ -545,6 +527,7 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
                 raise SessionLimitError(session_limit_message())
             closer = _wrap_closer(closer, key)
             _ACTIVE_LOCAL_PROFILES.add(key)
+            launch_seed.remember(profile_key, fp.get("seed"), engine)
             return closer, ctx, engine, json.dumps(fp, ensure_ascii=False)
         except SessionLimitError:
             raise
@@ -561,40 +544,39 @@ async def launch_for_account(account_fp: dict, browser_mode: str,
         raise RuntimeError("该账号的浏览器 Profile 正在使用，请先关闭浏览器后重试")
     user_data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Local engines are only available when no CDP endpoint is configured.
+    # 只用 CloakBrowser 本地 SDK。Playwright 自带的 Chromium 不认任何
+    # --fingerprint-* 开关，降级过去等于配置全失效且用户毫无察觉，
+    # 所以这里不兜底：不可用就把原因抛给调用方。
+    if not HAS_CLOAK:
+        raise RuntimeError(f"CloakBrowser 不可用：{_CLOAK_IMPORT_ERROR or 'SDK 未安装'}")
+    if not HAS_CLOAK_ASYNC:
+        raise RuntimeError(f"CloakBrowser 不可用：{_CLOAK_IMPORT_ERROR or 'SDK 缺少异步入口'}")
+
     try:
-        if HAS_CLOAK and HAS_CLOAK_ASYNC:
-            closer, ctx = await _launch_cloak_sdk(cmd_args, ctx_kwargs, headless,
-                                                  user_data_dir, proxy_server)
-            captured_context = ctx
-            if not _ctx_is_alive(ctx):
-                # post-handshake license kill: give the guard a beat, then re-check
-                await asyncio.sleep(1.0)
-                if not _ctx_is_alive(ctx):
-                    with contextlib.suppress(Exception):
-                        await closer()
-                    raise SessionLimitError(
-                        "CloakBrowser 会话被关闭（疑似套餐并发会话数已达上限），"
-                        "请关闭其他指纹浏览器窗口后重试")
-            closer = _wrap_closer(closer, key)
-            _ACTIVE_LOCAL_PROFILES.add(key)
-            return closer, ctx, "cloakbrowser", json.dumps(fp, ensure_ascii=False)
+        closer, ctx = await _launch_cloak_sdk(cmd_args, ctx_kwargs, headless,
+                                              user_data_dir, proxy_server)
     except SessionLimitError:
+        # 席位占满：直接禁止启动，并透出「关闭其他窗口再试」的说明。
         raise
     except Exception as e:
-        errors.append(str(e))
-
-    # Playwright fallback is still limited to explicit local mode.
-    try:
-        closer, ctx = await _launch_playwright(cmd_args, ctx_kwargs, headless,
-                                               user_data_dir, proxy_server)
-        closer = _wrap_closer(closer, key)
-        _ACTIVE_LOCAL_PROFILES.add(key)
-        return closer, ctx, "playwright", json.dumps(fp, ensure_ascii=False)
-    except Exception as e:
-        errors.append(str(e))
+        detail = _engine_last_error or str(e)
         await _capture_failure_screenshot(captured_context, capture_failure_screenshot)
-        raise RuntimeError("all engines failed: " + " | ".join(errors)) from e
+        raise RuntimeError(f"CloakBrowser 启动失败：{detail}") from e
+
+    captured_context = ctx
+    if not _ctx_is_alive(ctx):
+        # post-handshake license kill: give the guard a beat, then re-check
+        await asyncio.sleep(1.0)
+        if not _ctx_is_alive(ctx):
+            with contextlib.suppress(Exception):
+                await closer()
+            raise SessionLimitError(
+                "CloakBrowser 会话被关闭（疑似套餐并发会话数已达上限），"
+                "请关闭其他指纹浏览器窗口后重试")
+    closer = _wrap_closer(closer, key)
+    _ACTIVE_LOCAL_PROFILES.add(key)
+    launch_seed.remember(profile_key, fp.get("seed"), "cloakbrowser")
+    return closer, ctx, "cloakbrowser", json.dumps(fp, ensure_ascii=False)
 
 
 async def reclaim_manual_sessions() -> int:
@@ -744,6 +726,21 @@ def _session_ctx_healthy(sess: dict) -> bool:
     return bool(ctx is not None and getattr(ctx, "pages", None))
 
 
+# 手动打开的窗口没有导航目标，Chromium 会停在 about:blank，用户容易以为没打开成功。
+# 统一带到一个能核对出口 IP 的页面；导航失败不影响「浏览器已启动」这个事实。
+DEFAULT_HOME_URL = "https://ip.net.coffee/gpt/"
+
+
+async def _goto_default_page(ctx) -> None:
+    """Best-effort navigation for a freshly opened manual window."""
+    try:
+        pages = list(getattr(ctx, "pages", None) or [])
+        page = pages[0] if pages else await ctx.new_page()
+        await page.goto(DEFAULT_HOME_URL, wait_until="domcontentloaded", timeout=15_000)
+    except Exception:
+        pass
+
+
 async def open_managed_browser(fp: dict, browser_mode: str, key: str,
                                proxy_server: str = "") -> dict:
     """Launch (or reuse) a persistent headed browser session for manual use.
@@ -773,6 +770,7 @@ async def open_managed_browser(fp: dict, browser_mode: str, key: str,
     async with _MANUAL_SEM:
         closer, ctx, engine, _ = await launch_for_account(
             fp, browser_mode, profile_key=key, proxy_server=proxy_server)
+        await _goto_default_page(ctx)
 
     async def _keep():
         # hold the context open until cancelled; ctx.close() runs on cancel

@@ -11,6 +11,7 @@ from ..automation import scheduler
 from ..automation import browser as browser_mod
 from ..automation import fingerprint as fp_mod
 from ..automation import fpcheck
+from ..automation import launch_seed
 from ..automation import token_refresh
 from ..automation.flows import get_adapter
 from ..automation.flows.adapters._util import totp_code, translate_remote_status
@@ -259,6 +260,10 @@ async def open_account_browser(account_id: int):
         result = await browser_mod.open_managed_browser(
             fingerprint, "headed", _account_session_key(account_id),
             proxy_server=proxy_server)
+    except browser_mod.SessionLimitError as e:
+        # 席位被占满属于可重试的业务状态，不是服务故障：409 + 原始说明，
+        # 前端会直接展示 message，比笼统的 500 好排查。
+        raise HTTPException(409, str(e)[:200])
     except Exception as e:
         raise HTTPException(500, f"打开浏览器失败: {str(e)[:120]}")
     return {**result, "proxy": browser_mod.mask_proxy_server(proxy_server)}
@@ -270,6 +275,26 @@ async def close_account_browser(account_id: int):
     closed = await browser_mod.close_managed_session(
         _account_session_key(account_id))
     return {"ok": True, "closed": closed}
+
+
+@router.get("/{account_id}/last-seed")
+async def account_last_seed(account_id: int):
+    """该账号最后一次浏览器启动实际使用的 seed；无记录时 seed 为 null。
+
+    记录由 browser.launch_for_account 在每次成功启动后写入，上号任务与
+    「打开浏览器」共用同一个 profile key，因此两者都会覆盖这份记录。
+    """
+    db = await database.get_db()
+    row = await (await db.execute(
+        "SELECT id FROM accounts WHERE id=?", (account_id,))).fetchone()
+    if not row:
+        raise HTTPException(404, "account not found")
+    record = launch_seed.read(_account_session_key(account_id))
+    return {
+        "seed": record["seed"] if record else None,
+        "engine": record["engine"] if record else "",
+        "launched_at": record["launched_at"] if record else "",
+    }
 
 
 @router.post("/start")

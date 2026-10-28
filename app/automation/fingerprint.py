@@ -26,28 +26,68 @@ _BRAND_VERSIONS = list(range(130, 152))
 _GPU_COMBOS = {
     "windows": [
         ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Intel UHD 630"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Arc(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)", "Intel Arc Graphics"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)", "Intel Graphics"),
         ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)", "GeForce GTX 1660"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4050 Laptop GPU Direct3D11 vs_5_0 ps_5_0, D3D11)", "GeForce RTX 4050 Laptop GPU"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU Direct3D11 vs_5_0 ps_5_0, D3D11)", "GeForce RTX 4060 Laptop GPU"),
         ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Radeon RX 580"),
     ],
     "macos": [
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", "Apple M1"),
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", "Apple M2"),
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", "Apple M3"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)", "Apple M4"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M5, Unspecified Version)", "Apple M5"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)", "Apple M5 Pro"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Max, Unspecified Version)", "Apple M5 Max"),
+        ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Apple M6, Unspecified Version)", "Apple M6"),
         ("Google Inc. (Apple)", "ANGLE (Apple, ANGLE Metal Renderer: Intel(R) Iris(TM) Plus Graphics 645, Unspecified Version)", "Iris Plus 645"),
     ],
 }
-# 屏幕用各平台常见逻辑分辨率：1536x864 是 Windows 125% 缩放产物，Mac 没有
+# 内置屏幕使用 Apple 当前 MacBook Air/Pro 官方原生分辨率；其余为常见 Mac 外接/缩放分辨率。
 _SCREENS = {
-    "windows": [(1280, 720), (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080)],
-    "macos": [(1440, 900), (1470, 956), (1512, 982), (1728, 1117), (1920, 1080), (2560, 1440)],
+    "windows": [
+        (1280, 720), (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080),
+        (1920, 1200), (2880, 1800), (3200, 2000), (3840, 2400),
+    ],
+    "macos": [
+        (1440, 900), (1470, 956), (1512, 982), (1728, 1117), (1920, 1080), (2560, 1440),
+        (2560, 1664),  # MacBook Air 13-inch
+        (2880, 1864),  # MacBook Air 15-inch
+        (3024, 1964),  # MacBook Pro 14-inch
+        (3456, 2234),  # MacBook Pro 16-inch
+    ],
 }
 _CORES = {
     "windows": [4, 6, 8, 12, 16],
-    "macos": [8, 10, 12],   # Apple Silicon M1=8 / Pro=10 / M2/M3 Pro=12
+    "macos": [8, 10, 12, 15, 18],  # M1=8 / Air M5=10 / M6=12 / M5 Pro=15/18 / M5 Max=18
 }
 _TIMEZONES = ["Asia/Shanghai", "Asia/Tokyo", "America/New_York", "America/Chicago",
               "Europe/London", "Europe/Berlin", "Asia/Singapore", "America/Los_Angeles"]
 _LOCALES = ["zh-CN", "en-US", "en-GB", "ja-JP", "ko-KR", "de-DE"]
+
+# 种子区间与引擎自身的生成口径一致：SDK 的 get_default_stealth_args() 用的是
+# random.randint(10000, 99999)，文档也把默认值写成 Random (10000–99999)。
+# 引擎按 seed 确定性派生 canvas / WebGL / audio / 字体噪声，落在它自己的分布内最稳妥。
+SEED_MIN = 10000
+SEED_MAX = 99999
+
+# WebRTC 只允许走代理的候选：HTTP 代理没有 UDP 中继，效果等于关掉 WebRTC，
+# 但绝不会退回本机网卡去发 STUN，真实出口 IP 不会泄露。
+# 注意引擎只认裸开关 --webrtc-ip-handling-policy（实测二进制里没有 force- 前缀变体）。
+WEBRTC_POLICY_ARG = "--webrtc-ip-handling-policy=disable_non_proxied_udp"
+
+# 内存档位按平台区分（与 cores / screens / gpus 同一套规则）：
+# Mac 报的是统一内存可选档位，Windows 报的是 DDR5/LPDDR5X 物理内存档位。
+# 混用一个池会随机出「Windows 36GB」「Mac 4GB 独显本」这类不存在的组合。
+_MEMORY = {
+    # M6 MacBook Pro 14：16/24/32；MacBook Air M5：16/24/32；
+    # M5 Pro：24/48/64；M5 Max：36/48/64/128；8GB 留给存量 M1/M2 机型。
+    "macos": [8, 16, 24, 32, 36, 48, 64, 128],
+    # 轻薄本 8/16；DDR5 双通道常见 24/32；独显与移动工作站 64/128。
+    "windows": [8, 16, 24, 32, 64, 128],
+}
 
 # 合法选项池：/api/meta 下发给前端做下拉选择，前端「随机生成」也读这份数据，
 # 保证表单可选项、前端随机、后端 generate_fingerprint 三处永远一致。
@@ -64,10 +104,15 @@ FP_OPTIONS = {
         for p, ss in _SCREENS.items()
     },
     "cores": _CORES,
-    "memory": [4, 8],   # Chrome deviceMemory 规范上限 8
+    "memory": _MEMORY,
     "timezones": _TIMEZONES,
     "locales": _LOCALES,
 }
+
+
+def random_seed() -> int:
+    """5-digit seed, same range the engine generates for itself."""
+    return random.randint(SEED_MIN, SEED_MAX)
 
 
 def generate_fingerprint() -> dict:
@@ -76,15 +121,14 @@ def generate_fingerprint() -> dict:
     gpu = random.choice(_GPU_COMBOS[platform])
     width, height = random.choice(_SCREENS[platform])
     fp = {
-        "seed": random.randint(1, 10**9),
+        "seed": random_seed(),
         "platform": platform,
         "brand": random.choice(_BRANDS),
         "brand_version": random.choice(_BRAND_VERSIONS),
         "gpu_vendor": gpu[0],
         "gpu_renderer": gpu[1],
         "hardware_concurrency": random.choice(_CORES[platform]),
-        # Chrome 规范 deviceMemory 上限为 8，报 16 必假
-        "device_memory": random.choice([4, 8, 8]),
+        "device_memory": random.choice(_MEMORY[platform]),
         "screen_width": width,
         "screen_height": height,
         "timezone": random.choice(_TIMEZONES),
@@ -105,7 +149,7 @@ def generate_from_template(template: dict | str | None) -> dict:
     carries a seed — one is always randomized here.
     """
     base = {k: v for k, v in sanitize(template).items() if k != "seed"}
-    base["seed"] = random.randint(1, 10**9)
+    base["seed"] = random_seed()
     return base
 
 
@@ -132,11 +176,14 @@ def sanitize(fp: dict | str | None) -> dict:
 
 def cloak_args(fp: dict) -> list[str]:
     """Map fingerprint dict to CloakBrowser --fingerprint-* command line flags."""
-    args: list[str] = []
+    # WebRTC 策略与指纹字段无关，任何启动都要带上。
+    args: list[str] = [WEBRTC_POLICY_ARG]
     if not fp:
         return args
     m = {
-        "seed": "--fingerprint-seed",
+        # seed 是引擎的主开关 --fingerprint=<seed>（没有 --fingerprint-seed 这个开关；
+        # 用错名字会被静默忽略，SDK 自带的随机 seed 反而生效，账号声明的种子形同虚设）。
+        "seed": "--fingerprint",
         "platform": "--fingerprint-platform",
         "brand": "--fingerprint-brand",
         "brand_version": "--fingerprint-brand-version",

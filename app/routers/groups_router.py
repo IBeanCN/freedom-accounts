@@ -635,6 +635,8 @@ async def open_browser(group_id: int):
     try:
         result = await browser_mod.open_managed_browser(
             fp, "headed", _manual_session_key(group_id), proxy_server=proxy_server)
+    except browser_mod.SessionLimitError as e:
+        raise HTTPException(409, str(e)[:200])
     except Exception as e:
         raise HTTPException(500, f"打开浏览器失败: {str(e)[:120]}")
     return {**result, "proxy": browser_mod.mask_proxy_server(proxy_server)}

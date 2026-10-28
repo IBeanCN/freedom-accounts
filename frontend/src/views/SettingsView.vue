@@ -28,6 +28,7 @@
           <div class="cell-stack page-panel">
             <span>当前引擎：{{ appStore.engineTitle() }}</span>
             <span>引擎状态：{{ engine.cloak_available ? '可用' : '不可用' }}</span>
+            <span v-if="!engine.cloak_available && engine.unavailable_reason">不可用原因：{{ engine.unavailable_reason }}</span>
             <span>引擎版本：{{ engine.cdp_version ? `${engine.cloak_version || '—'}（CDP ${engine.cdp_version}）` : engine.cloak_version || '—' }}</span>
             <span>License Key：{{ licenseText }}</span>
             <span>Python：{{ engine.python || '—' }}</span>

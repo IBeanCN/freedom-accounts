@@ -1,4 +1,4 @@
-# 应用镜像：先构建 Vue 前端，再包含 FastAPI 后端和 Playwright 降级引擎。
+# 应用镜像：先构建 Vue 前端，再包含 FastAPI 后端与 CloakBrowser 驱动。
 FROM node:22-alpine AS frontend-build
 
 WORKDIR /src
@@ -15,8 +15,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 Chromium；CloakBrowser 远程 CDP 可用时这里仅作为降级引擎。
-RUN playwright install --with-deps chromium
+# 只装 Chromium 运行所需的系统库，不下载 Playwright 自带 Chromium：
+# 项目只用 CloakBrowser（远程 CDP 或本地 SDK），自带 Chromium 不认 --fingerprint-*，
+# 也不会再被降级调用；但 CloakBrowser 二进制同样依赖这些系统库。
+RUN playwright install-deps chromium
 
 COPY . .
 COPY --from=frontend-build /src/dist frontend/dist

@@ -5,7 +5,7 @@
 ## 核心能力
 
 - **分组与账号**：按分组配置任务地址、上游凭证、并发与节奏；账号支持单条或批量添加，并可同步上游账号。
-- **指纹浏览器**：优先使用 CloakBrowser；未配置远程 CDP 时使用本地 SDK，SDK 不可用时降级 Playwright Chromium。
+- **指纹浏览器**：只用 CloakBrowser；未配置远程 CDP 时使用本地 SDK。不做 Playwright 降级——SDK 不可用或席位占满时直接报出原因。
 - **任务调度**：每个分组有独立队列和并发控制，支持任务执行、Token 刷新、停止、任务日志和最近状态展示。
 - **账号列表**：展示上游错误、指纹检测、代理和重置明细；重置次数由存储的明细数组推导，只在手动点击刷新时请求上游。
 - **CPR 自动上号**：账号数据自动刷新成功后，上游状态为「错误」的启用账号，已配置密码且可选 2FA 有效时自动进入上号队列；排队或运行中的账号跳过。关闭账号数据自动刷新（间隔设为 0）即关闭此触发。CPR 上号失败时停用本地账号；成功后对有上游 ID 的账号查询详情，仍为「错误」时也停用，避免后续自动重复上号。手动停止不触发停用；详情校验失败只记录日志，不按旧状态停用。
@@ -77,7 +77,7 @@ cd ..
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`playwright install chromium` 是降级引擎所需；使用 CloakBrowser SDK 或远程 CDP 时不需要作为常规前置步骤。
+项目不做 Playwright Chromium 降级，因此无需执行 `playwright install chromium`；Playwright 仅作为操作浏览器上下文/远程 CDP 的驱动库使用。
 
 ## 配置
 
@@ -111,9 +111,12 @@ openssl rand -hex 32
 
 | 模式 | 触发条件 | 说明 |
 |---|---|---|
-| CloakBrowser CDP | 系统设置中配置了 cloakserve CDP 地址 | 适合容器或远程浏览器；失败时不降级到本地引擎 |
+| CloakBrowser CDP | 系统设置中配置了 cloakserve CDP 地址 | 适合容器或远程浏览器；失败时直接报错，不切到本地引擎 |
 | CloakBrowser SDK | CDP 留空且本地已安装 SDK | 使用本机 SDK 与持久化浏览器上下文 |
-| Playwright Chromium | CDP 留空且本地 SDK 不可用 | 兜底方案，伪装能力弱于源码级指纹方案 |
+
+**没有 Playwright 兜底**：自带 Chromium 不识别任何 `--fingerprint-*` 开关，降级运行等于指纹配置全部失效，
+因此在 SDK 缺失或启动失败时直接报出原因，而不是悄悄换一个「看起来能跑」的浏览器。席位（套餐并发会话数）
+占满时同样禁止启动并提示先关闭其他指纹浏览器窗口。
 
 CloakBrowser 安装、镜像、授权和版本管理请参考官方项目：<https://github.com/CloakHQ/CloakBrowser>。
 

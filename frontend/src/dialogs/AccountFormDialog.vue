@@ -79,7 +79,13 @@
           <el-button @click="fillGeo">回填时区</el-button>
           <span class="section-hint">留空按分组指纹模板生成，无模板则随机</span>
         </div>
-        <FingerprintFields v-model="form.fingerprint" show-seed />
+        <FingerprintFields
+          ref="fpFields"
+          v-model="form.fingerprint"
+          :original-seed="fpBase.seed"
+          :account-id="editing?.id"
+          show-seed
+        />
       </template>
     </el-form>
     <template #footer>
@@ -117,6 +123,7 @@ const mode = ref('single')
 const showEnvironment = ref(false)
 const saving = ref(false)
 const fpBase = ref({})
+const fpFields = ref(null)
 const form = reactive(createForm(null))
 const INHERIT_PROXY = 'inherit'
 
@@ -210,6 +217,8 @@ function parseBulkAccounts(text) {
 }
 
 async function submit() {
+  // 环境配置折叠时指纹表单未挂载，此时无需校验。
+  if (fpFields.value && !fpFields.value.validateSeed()) return
   const shared = {
     group_id: appStore.currentGroup,
     browser_mode: form.browser_mode,
